@@ -1,0 +1,217 @@
+============================================================================
+TESTE DOS TOOLS DO MCP personal-files
+============================================================================
+Instruções gerais:
+  - Cole cada "pergunta" abaixo na conversa com o agente (LibreChat).
+  - O agente vai interpretar e chamar o tool correspondente.
+  - Depois de cada pergunta, confira a resposta do agente seguindo a coluna
+    "COMO SABER QUE FUNCIONOU".
+  - Regra de ouro: se a resposta começar com "ERROR: ...", o tool FALHOU.
+    Se vier em JSON (com chaves e valores), o tool FUNCIONOU.
+  - Importante: faça os testes NA ORDEM, pois alguns dependem dos anteriores
+    (ex.: publicar depende de criar o arquivo antes; buscar depende de indexar).
+
+------------------------------------------------------------------------
+PARTE 1 — ARQUIVOS (storage)
+------------------------------------------------------------------------
+
+1. write_file (criar um arquivo)
+   Pergunta:
+     "Crie um arquivo chamado notas/meu-teste.txt com o seguinte conteúdo:
+      Linha um do teste.
+      Linha dois do teste."
+   COMO SABER QUE FUNCIONOU:
+     - A resposta é JSON com a chave "file".
+     - Contém "size_bytes" (tamanho maior que 0) e "name": "meu-teste.txt".
+
+2. list_files (listar arquivos)
+   Pergunta:
+     "Liste os arquivos da minha pasta pessoal, incluindo subpastas (recursivo)."
+   COMO SABER QUE FUNCIONOU:
+     - JSON com "count" (número de itens).
+     - Na lista "files" aparece "notas/meu-teste.txt".
+
+3. read_file (ler um arquivo)
+   Pergunta:
+     "Leia o conteúdo do arquivo notas/meu-teste.txt."
+   COMO SABER QUE FUNCIONOU:
+     - JSON com "content" contendo "Linha um do teste." e "Linha dois do teste."
+     - "is_binary": false.
+
+4. update_file (atualizar um arquivo existente)
+   Pergunta:
+     "Atualize o arquivo notas/meu-teste.txt com o conteúdo: Conteúdo atualizado."
+   COMO SABER QUE FUNCIONOU:
+     - JSON com a chave "file".
+     - Depois rode o read_file (pergunta 3) e veja o novo conteúdo "Conteúdo atualizado."
+     - (Se tentar atualizar um arquivo que NÃO existe, deve dar ERROR: update_failed)
+
+5. edit_file (alterar um trecho específico)
+   Pergunta:
+     "No arquivo notas/meu-teste.txt, substitua a palavra 'Conteúdo' por 'Texto'."
+   COMO SABER QUE FUNCIONOU:
+     - JSON com "edits_applied": 1.
+     - Depois rode read_file e veja "Texto atualizado." no lugar.
+     - Se o trecho buscado aparecer mais de uma vez, vem
+       ERROR: ambiguous_match (deve ser único).
+     - Se o trecho não existir, vem ERROR: no_match.
+
+6. read_multiple_files (ler vários arquivos de uma vez)
+   Pergunta:
+     "Crie os arquivos notas/a.txt com 'AAA' e notas/b.txt com 'BBB'.
+      Depois leia os arquivos notas/a.txt, notas/b.txt e notas/nao-existe.txt
+      de uma só vez."
+   COMO SABER QUE FUNCIONOU:
+     - JSON com "files" contendo as três chaves.
+     - "notas/a.txt" tem "content": "AAA".
+     - "notas/b.txt" tem "content": "BBB".
+     - "notas/nao-existe.txt" tem "error" (arquivo não existe).
+
+7. move_file (mover/renomear)
+   Pergunta:
+     "Mova o arquivo notas/meu-teste.txt para notas/renomeado.txt."
+   COMO SABER QUE FUNCIONOU:
+     - JSON com "moved": {"src": "notas/meu-teste.txt", "dst": "notas/renomeado.txt"}.
+     - Se rodar list_files de novo, "meu-teste.txt" sumiu e "renomeado.txt" apareceu.
+
+8. get_file_info (metadados do arquivo)
+   Pergunta:
+     "Me mostre as informações do arquivo notas/renomeado.txt."
+   COMO SABER QUE FUNCIONOU:
+     - JSON com "name": "renomeado.txt", "size_bytes", "mime_type",
+       "is_directory": false e "sha256" (hash).
+
+9. delete_file (apagar um arquivo)
+   Pergunta:
+     "Apague o arquivo notas/renomeado.txt."
+   COMO SABER QUE FUNCIONOU:
+     - JSON com "deleted": "notas/renomeado.txt".
+     - Depois rode list_files e o arquivo não aparece mais.
+
+------------------------------------------------------------------------
+PARTE 2 — DOCUMENTAÇÃO (menu / document memory)
+------------------------------------------------------------------------
+
+10. save_documentation (salvar documento no menu)
+    Pergunta:
+      "Salve uma documentação com o nome guia-teste.md e o conteúdo:
+       # Guia de Teste
+       Este é um guia para testar a documentação.
+       Dê o título 'Guia de Teste' e a descrição 'Documento de teste'."
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "file": "docs/guia-teste.md" e "saved": true.
+      - Aparece "suggestion" sugerindo indexar (index_document).
+      - O arquivo foi criado dentro da pasta "docs/" (não na raiz).
+
+11. get_document_metadata (ver metadados do documento)
+    Pergunta:
+      "Mostre os metadados do documento guia-teste.md."
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "title": "Guia de Teste" e "description": "Documento de teste".
+      - "indexing_status" ainda é "not_indexed" (não foi indexado).
+
+12. update_documentation (atualizar documento)
+    Pergunta:
+      "Atualize a documentação guia-teste.md mudando o conteúdo para:
+       # Guia de Teste Atualizado
+       Conteúdo novo."
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "updated": true.
+      - Rode get_document_metadata de novo e veja que o status foi mantido.
+
+------------------------------------------------------------------------
+PARTE 3 — LINKS PÚBLICOS (publicação)
+------------------------------------------------------------------------
+
+13. publish_file (criar link público)
+    Pergunta:
+      "Publique o arquivo docs/guia-teste.md e me dê o link."
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "token" (uma sequência aleatória) e "url"
+        no formato https://gpt.riesel.com.br/files/<token>.
+      - Anote o token/URL para o próximo passo.
+
+14. get_public_link (consultar link ativo)
+    Pergunta:
+      "Me mostre o link público atual do arquivo docs/guia-teste.md."
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "url" e "token" (iguais aos do passo 13).
+      - Se NÃO houver link, vem ERROR: not_found.
+
+15. (TESTE EXTERNO) Baixar pelo navegador/curl
+    Ação:
+      Abra no navegador (ou rode no terminal da VPS):
+        curl -I "https://gpt.riesel.com.br/files/<TOKEN_DO_PASSO_13>"
+    COMO SABER QUE FUNCIONOU:
+      - HTTP 200 OK.
+      - Headers "Content-Disposition: attachment; filename=..." e
+        "X-Content-Type-Options: nosniff".
+      - (Este é o teste de verdade do link público: o download funciona.)
+
+16. list_public_links (listar todos os links)
+    Pergunta:
+      "Liste todos os meus links públicos."
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "count" e a lista "links".
+      - Aparece o token do passo 13 com "revoked": false.
+
+17. unpublish_file (revogar o link)
+    Pergunta:
+      "Revogue o link público do arquivo docs/guia-teste.md."
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "revoked": "docs/guia-teste.md".
+      - Se tentar baixar o link de novo (passo 15), agora dá HTTP 410 Gone.
+
+------------------------------------------------------------------------
+PARTE 4 — CONHECIMENTO (RAG / busca semântica)
+------------------------------------------------------------------------
+
+18. index_document (indexar no RAG)
+    Pergunta:
+      "Indexe o documento docs/guia-teste.md na base de conhecimento."
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "indexed": true e um "rag_file_id" (UUID).
+      - (Se vier ERROR: rag_canary_failed, o documento não foi confirmado na busca.)
+
+19. get_index_status (resumo da indexação)
+    Pergunta:
+      "Me mostre o status da minha base de conhecimento."
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "documents_indexed": 1 (ou mais), "rag_health" com
+        "status": "UP" (ou "available").
+      - "documents_failed": 0.
+
+20. search_knowledge (buscar semanticamente)
+    Pergunta:
+      "Busque na minha base de conhecimento: 'o que é o guia de teste?'"
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "count" maior que 0 e a lista "results".
+      - Nos resultados há "content" contendo trechos do guia que você salvou.
+      - (Este é o teste de verdade do RAG: a busca retorna o conteúdo indexado.)
+
+21. remove_from_knowledge (remover do RAG)
+    Pergunta:
+      "Remova o documento docs/guia-teste.md da base de conhecimento."
+    COMO SABER QUE FUNCIONOU:
+      - JSON com "removed": true e o "rag_file_id".
+      - Rode search_knowledge de novo: agora "count": 0 (não acha mais).
+
+------------------------------------------------------------------------
+RESUMO RÁPIDO DE COMO IDENTIFICAR SUCESSO x FALHA
+------------------------------------------------------------------------
+  SUCESSO  -> resposta começa com "{" (JSON) e contém os campos esperados.
+  FALHA    -> resposta começa com "ERROR:" seguido de um código e motivo.
+              Exemplos: ERROR: not_found, ERROR: write_failed,
+              ERROR: invalid_path, ERROR: no_match, ERROR: ambiguous_match,
+              ERROR: rag_canary_failed.
+
+  Dicas:
+    - Caminhos são sempre RELATIVOS e dentro da sua pasta pessoal.
+      Nunca use caminho absoluto (/etc/...) nem "..".
+    - save_documentation coloca o arquivo em "docs/".
+    - edit_file: o trecho "oldText" deve existir EXATAMENTE UMA VEZ no arquivo.
+    - Para o link público funcionar de verdade, o teste do passo 15
+      (curl no navegador) é o que comprova a publicação.
+    - Para o RAG funcionar de verdade, o passo 20 (search_knowledge
+      retornando conteúdo) é o que comprova a indexação.
+============================================================================

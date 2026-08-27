@@ -1,0 +1,177 @@
+"""Tool tests: storage + documentation, structured error contract."""
+from __future__ import annotations
+
+import json
+
+from personal_files_mcp import tools
+
+USER = "5f8d3a4b2c1e0d0001a2b3c4"
+
+
+def _ok_payload(s: str) -> dict:
+    assert not s.startswith("ERROR:"), s
+    return json.loads(s)
+
+
+def test_list_files_empty(cfg):
+    out = tools.list_files(cfg, USER)
+    payload = _ok_payload(out)
+    assert payload["count"] == 0
+
+
+def test_write_and_read_file(cfg):
+    out = tools.write_file(cfg, USER, "docs/note.md", "olá mundo")
+    payload = _ok_payload(out)
+    assert payload["file"]["size_bytes"] == len("olá mundo".encode())
+    out = tools.read_file(cfg, USER, "docs/note.md")
+    payload = _ok_payload(out)
+    assert payload["content"] == "olá mundo"
+    assert payload["is_binary"] is False
+
+
+def test_read_binary_returns_is_binary_true(cfg):
+    from personal_files_mcp import storage
+    storage.write(cfg, USER, "blob.bin", b"\x80\x81\x82\x83")
+    out = tools.read_file(cfg, USER, "blob.bin")
+    payload = _ok_payload(out)
+    assert payload["is_binary"] is True
+    assert payload["content"] is None
+
+
+def test_update_requires_existing(cfg):
+    out = tools.update_file(cfg, USER, "missing.txt", "data")
+    assert out.startswith("ERROR:")
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "update_failed"
+
+
+def test_delete_then_read(cfg):
+    tools.write_file(cfg, USER, "del.txt", "x")
+    out = tools.delete_file(cfg, USER, "del.txt")
+    _ok_payload(out)
+    out = tools.read_file(cfg, USER, "del.txt")
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "not_found"
+
+
+def test_move_file(cfg):
+    tools.write_file(cfg, USER, "src.txt", "hi")
+    out = tools.move_file(cfg, USER, "src.txt", "sub/moved.txt")
+    payload = _ok_payload(out)
+    assert payload["moved"]["dst"] == "sub/moved.txt"
+    out = tools.read_file(cfg, USER, "sub/moved.txt")
+    payload = _ok_payload(out)
+    assert payload["content"] == "hi"
+
+
+def test_get_file_info_includes_documentation(cfg):
+    tools.save_documentation(cfg, USER, "guide.md", "# Guide\nline2", title="Guide")
+    out = tools.get_file_info(cfg, USER, "docs/guide.md")
+    payload = _ok_payload(out)
+    assert "documentation" in payload
+    assert payload["documentation"]["title"] == "Guide"
+
+
+def test_save_documentation_rejects_traversal(cfg):
+    out = tools.save_documentation(cfg, USER, "../escape.md", "evil")
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "invalid_filename"
+
+
+def test_save_documentation_rejects_hidden(cfg):
+    out = tools.save_documentation(cfg, USER, ".hidden.md", "x")
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "invalid_filename"
+
+
+def test_update_documentation_requires_existing(cfg):
+    out = tools.update_documentation(cfg, USER, "absent.md", "x")
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "not_found"
+
+
+def test_get_document_metadata_returns_entry(cfg):
+    tools.save_documentation(cfg, USER, "guide.md", "# Guide", title="Guide", description="d")
+    out = tools.get_document_metadata(cfg, USER, "guide.md")
+    payload = _ok_payload(out)
+    assert payload["title"] == "Guide"
+    assert payload["description"] == "d"
+    assert payload["indexing_status"] == "not_indexed"
+
+
+def test_path_traversal_via_write_returns_error(cfg):
+    out = tools.write_file(cfg, USER, "../escape.txt", "x")
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] in ("write_failed", "invalid_path")
+
+
+def test_write_rejects_non_string_content(cfg):
+    out = tools.write_file(cfg, USER, "x.txt", 12345)  # type: ignore[arg-type]
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "invalid_content"
+
+
+def test_write_too_large_returns_error(cfg, monkeypatch):
+    from personal_files_mcp import storage
+    monkeypatch.setattr(storage, "MAX_FILE_BYTES", 5)
+    out = tools.write_file(cfg, USER, "big.txt", "0123456789")
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "write_failed"
+
+
+def test_edit_file_applies_replacements(cfg):
+    tools.write_file(cfg, USER, "notas/edit.txt", "ola mundo\nsegunda linha\n")
+    out = tools.edit_file(
+        cfg,
+        USER,
+        "notas/edit.txt",
+        [{"oldText": "ola", "newText": "ola alterada"}],
+    )
+    payload = _ok_payload(out)
+    assert payload["edits_applied"] == 1
+    out = tools.read_file(cfg, USER, "notas/edit.txt")
+    payload = _ok_payload(out)
+    assert "ola alterada mundo" in payload["content"]
+    assert "ola mundo" not in payload["content"]
+
+
+def test_edit_file_no_match_returns_error(cfg):
+    tools.write_file(cfg, USER, "notas/edit.txt", "conteudo")
+    out = tools.edit_file(
+        cfg, USER, "notas/edit.txt", [{"oldText": "nao-existe", "newText": "x"}]
+    )
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "no_match"
+
+
+def test_edit_file_ambiguous_match_returns_error(cfg):
+    tools.write_file(cfg, USER, "notas/edit.txt", "repetido repetido")
+    out = tools.edit_file(
+        cfg, USER, "notas/edit.txt", [{"oldText": "repetido", "newText": "x"}]
+    )
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "ambiguous_match"
+
+
+def test_edit_file_traversal_rejected(cfg):
+    out = tools.edit_file(
+        cfg, USER, "../escape.txt", [{"oldText": "a", "newText": "b"}]
+    )
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "not_found"
+
+
+def test_read_multiple_files(cfg):
+    tools.write_file(cfg, USER, "a.txt", "conteudo A")
+    tools.write_file(cfg, USER, "b.txt", "conteudo B")
+    out = tools.read_multiple_files(cfg, USER, ["a.txt", "b.txt", "inexistente.txt"])
+    payload = _ok_payload(out)
+    assert payload["files"]["a.txt"]["content"] == "conteudo A"
+    assert payload["files"]["b.txt"]["content"] == "conteudo B"
+    assert "error" in payload["files"]["inexistente.txt"]
+
+
+def test_read_multiple_files_traversal_rejected(cfg):
+    out = tools.read_multiple_files(cfg, USER, ["../escape.txt"])
+    payload = _ok_payload(out)
+    assert "error" in payload["files"]["../escape.txt"]
