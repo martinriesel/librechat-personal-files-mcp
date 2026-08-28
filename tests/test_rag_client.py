@@ -55,6 +55,24 @@ def test_canary_skips_headings_and_empty_lines():
     assert phrase == "Real text here for testing."
 
 
+def test_canary_strips_blockquote_marker():
+    content = "# Title\n\n> Servidor MCP para armazenamento.\n\nBody."
+    phrase = rag_client._canary_phrase(content)
+    assert phrase == "Servidor MCP para armazenamento."
+
+
+def test_canary_strips_list_markers():
+    content = "# Title\n\n- list item one\n- list item two\n\nBody."
+    phrase = rag_client._canary_phrase(content)
+    assert phrase == "list item one"
+
+
+def test_canary_skips_horizontal_rule():
+    content = "# Title\n\n---\n\n## Section\n\nBody text after the rule."
+    phrase = rag_client._canary_phrase(content)
+    assert phrase == "Body text after the rule."
+
+
 @pytest.mark.asyncio
 async def test_embed_sends_multipart_payload(settings):
     captured = {}

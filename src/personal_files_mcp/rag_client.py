@@ -46,27 +46,41 @@ RE_MARKDOWN_ITALIC = re.compile(r"\*(.+?)\*")
 RE_MARKDOWN_CODE = re.compile(r"`(.+?)`")
 RE_MARKDOWN_HEADING = re.compile(r"^#{1,6}\s*")
 RE_MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+RE_MARKDOWN_BLOCKQUOTE = re.compile(r"^>\s*")
+RE_MARKDOWN_LIST = re.compile(r"^\s*[-*+]\s+")
+RE_MARKDOWN_ORDERED_LIST = re.compile(r"^\s*\d+[.)]\s+")
+RE_MARKDOWN_HR = re.compile(r"^\s*([-*_])\s*\1\s*\1\s*$")
 
 
 def _strip_markdown(text: str) -> str:
     """Remove common markdown markers so the canary matches the rag_api loader's
     normalized output (which strips ``**bold**``, ``*italic*``, headings,
-    backticks and link syntax)."""
+    backticks, links, blockquotes and list markers)."""
     text = RE_MARKDOWN_BOLD.sub(r"\1", text)
     text = RE_MARKDOWN_ITALIC.sub(r"\1", text)
     text = RE_MARKDOWN_CODE.sub(r"\1", text)
     text = RE_MARKDOWN_LINK.sub(r"\1", text)
     text = RE_MARKDOWN_HEADING.sub("", text)
+    text = RE_MARKDOWN_BLOCKQUOTE.sub("", text)
+    text = RE_MARKDOWN_LIST.sub("", text)
+    text = RE_MARKDOWN_ORDERED_LIST.sub("", text)
     return text.strip()
 
 
+def _is_horizontal_rule(line: str) -> bool:
+    return bool(RE_MARKDOWN_HR.match(line))
+
+
 def _clean_for_canary(text: str) -> str:
-    """Extract the first meaningful non-heading line for use as a canary phrase."""
+    """Extract the first meaningful non-heading, non-horizontal-rule line for use
+    as a canary phrase."""
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
         if stripped.startswith("#"):
+            continue
+        if _is_horizontal_rule(stripped):
             continue
         cleaned = RE_CONTROL.sub("", stripped)
         cleaned = _strip_markdown(cleaned)
