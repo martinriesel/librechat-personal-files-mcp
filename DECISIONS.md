@@ -98,3 +98,7 @@ way they are.
 ## D022 — Canary: strip markdown before matching
 **Decision:** `rag_client._clean_for_canary` applies `_strip_markdown` (removes `**bold**`, `*italic*`, backticks, headings, links) to the canary phrase.
 **Reason:** The rag_api loader normalizes text (e.g. strips `**` and merges lines). Matching the raw phrase (with `**`) against the stripped chunk failed, causing a false `indexing_failed` and chunk deletion. Stripping markdown aligns the phrase with the loader output.
+
+## D023 — Canary: also strip blockquote/list markers and skip horizontal rules
+**Decision:** Extend `_strip_markdown` to also remove `>` blockquote markers, `-`/`*`/`+` list bullets, and `1.` ordered-list markers; `_clean_for_canary` skips horizontal rules (`---`, `***`, `___`).
+**Reason:** Same class of failure as D022, but for documents starting with a blockquote or list. The rag_api loader strips `>`/bullets, but the canary kept them, so the substring match failed (e.g. `> Servidor MCP ...` vs `Servidor MCP ...`), causing a false `rag_canary_failed` and chunk deletion.
