@@ -96,8 +96,8 @@ def test_resolve_symlink_escape_rejected(cfg, tmp_root):
 
 
 def test_write_read_roundtrip(cfg):
-    storage.write(cfg, USER, "docs/note.md", "olá mundo".encode())
-    assert storage.read(cfg, USER, "docs/note.md") == "olá mundo".encode()
+    storage.write(cfg, USER, "docs/note.md", "héllo wörld".encode())
+    assert storage.read(cfg, USER, "docs/note.md") == "héllo wörld".encode()
 
 
 def test_update_requires_existing(cfg):

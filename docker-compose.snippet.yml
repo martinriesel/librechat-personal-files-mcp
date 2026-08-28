@@ -1,9 +1,11 @@
-# docker-compose.snippet.yml — blocks to add to docker-compose.override.yml
+# docker-compose.snippet.yml — blocks to add to your docker-compose.override.yml
 #
-# Copy these blocks into your existing docker-compose.override.yml under the
-# corresponding top-level keys (services:, networks:).
+# This is NOT a full compose file. Copy the blocks below into your existing
+# LibreChat `docker-compose.override.yml` under the corresponding top-level keys
+# (`services:` and `networks:`).
 #
-# See also HOST_SETUP.sh for one-time host preparation commands.
+# It assumes the Docker image is already available (pull from GHCR, or build it
+# yourself). Replace <YOUR-DOMAIN> with your public hostname.
 
 services:
   # ------------------------------------------------------------
@@ -11,17 +13,14 @@ services:
   # ------------------------------------------------------------
   nginx:
     volumes:
-      # existing volumes must be kept; add this line:
+      # keep your existing nginx volumes and add this line:
       - ./data/private:/data/private:ro
 
   # ------------------------------------------------------------
   # Personal Files MCP server
   # ------------------------------------------------------------
   librechat-personal-files:
-    build:
-      context: ./mcp-personal-files
-    # After publishing to GHCR, replace 'build' with:
-    # image: ghcr.io/martinriesel/librechat-personal-files-mcp:latest
+    image: ghcr.io/martinriesel/librechat-personal-files-mcp:latest
     container_name: librechat-personal-files
     restart: unless-stopped
     user: "2000:2500"
@@ -31,7 +30,7 @@ services:
       SHARE_ROOT: /data/share
       RAG_API_URL: http://rag_api:8000
       JWT_SECRET: ${JWT_SECRET}
-      PUBLIC_BASE_URL: https://gpt.riesel.com.br/files
+      PUBLIC_BASE_URL: https://<YOUR-DOMAIN>/files
       MAX_FILE_SIZE_MB: "20"
       REGISTRY_DB: /data/private/_system/links.db
       UMASK: "002"

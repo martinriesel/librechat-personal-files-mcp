@@ -20,12 +20,12 @@ def test_list_files_empty(cfg):
 
 
 def test_write_and_read_file(cfg):
-    out = tools.write_file(cfg, USER, "docs/note.md", "olá mundo")
+    out = tools.write_file(cfg, USER, "docs/note.md", "héllo wörld")
     payload = _ok_payload(out)
-    assert payload["file"]["size_bytes"] == len("olá mundo".encode())
+    assert payload["file"]["size_bytes"] == len("héllo wörld".encode())
     out = tools.read_file(cfg, USER, "docs/note.md")
     payload = _ok_payload(out)
-    assert payload["content"] == "olá mundo"
+    assert payload["content"] == "héllo wörld"
     assert payload["is_binary"] is False
 
 
@@ -120,34 +120,34 @@ def test_write_too_large_returns_error(cfg, monkeypatch):
 
 
 def test_edit_file_applies_replacements(cfg):
-    tools.write_file(cfg, USER, "notas/edit.txt", "ola mundo\nsegunda linha\n")
+    tools.write_file(cfg, USER, "notes/edit.txt", "hello world\nsecond line\n")
     out = tools.edit_file(
         cfg,
         USER,
-        "notas/edit.txt",
-        [{"oldText": "ola", "newText": "ola alterada"}],
+        "notes/edit.txt",
+        [{"oldText": "hello", "newText": "hello changed"}],
     )
     payload = _ok_payload(out)
     assert payload["edits_applied"] == 1
-    out = tools.read_file(cfg, USER, "notas/edit.txt")
+    out = tools.read_file(cfg, USER, "notes/edit.txt")
     payload = _ok_payload(out)
-    assert "ola alterada mundo" in payload["content"]
-    assert "ola mundo" not in payload["content"]
+    assert "hello changed world" in payload["content"]
+    assert "hello world" not in payload["content"]
 
 
 def test_edit_file_no_match_returns_error(cfg):
-    tools.write_file(cfg, USER, "notas/edit.txt", "conteudo")
+    tools.write_file(cfg, USER, "notes/edit.txt", "some content")
     out = tools.edit_file(
-        cfg, USER, "notas/edit.txt", [{"oldText": "nao-existe", "newText": "x"}]
+        cfg, USER, "notes/edit.txt", [{"oldText": "does-not-exist", "newText": "x"}]
     )
     body = json.loads(out[len("ERROR: "):])
     assert body["error"] == "no_match"
 
 
 def test_edit_file_ambiguous_match_returns_error(cfg):
-    tools.write_file(cfg, USER, "notas/edit.txt", "repetido repetido")
+    tools.write_file(cfg, USER, "notes/edit.txt", "repeated repeated")
     out = tools.edit_file(
-        cfg, USER, "notas/edit.txt", [{"oldText": "repetido", "newText": "x"}]
+        cfg, USER, "notes/edit.txt", [{"oldText": "repeated", "newText": "x"}]
     )
     body = json.loads(out[len("ERROR: "):])
     assert body["error"] == "ambiguous_match"

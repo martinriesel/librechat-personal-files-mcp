@@ -38,21 +38,21 @@ def test_jwt_disabled_when_secret_short():
 
 def test_canary_strips_markdown_formatting():
     content = (
-        "# Título\n\n"
-        "**Data do registro:** 19 de maio de 2026  \n"
-        "**Idioma:** pt-BR\n\n"
-        "## Objetivo\n\n"
-        "Corpo do documento."
+        "# Title\n\n"
+        "**Registration date:** 19 May 2026  \n"
+        "**Language:** en-US\n\n"
+        "## Objective\n\n"
+        "Document body."
     )
     phrase = rag_client._canary_phrase(content)
     assert "**" not in phrase
-    assert phrase == "Data do registro: 19 de maio de 2026"
+    assert phrase == "Registration date: 19 May 2026"
 
 
 def test_canary_skips_headings_and_empty_lines():
-    content = "# Título\n\n## Subtítulo\n\nTexto real aqui para teste."
+    content = "# Title\n\n## Subtitle\n\nReal text here for testing."
     phrase = rag_client._canary_phrase(content)
-    assert phrase == "Texto real aqui para teste."
+    assert phrase == "Real text here for testing."
 
 
 @pytest.mark.asyncio

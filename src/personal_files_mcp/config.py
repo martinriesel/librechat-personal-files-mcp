@@ -33,7 +33,7 @@ class AppSettings:
     share_root: str = "/data/share"
     rag_api_url: str = "http://rag_api:8000"
     jwt_secret: str = ""
-    public_base_url: str = "https://gpt.riesel.com.br/files"
+    public_base_url: str = "https://your-domain.example/files"
     max_file_size_mb: int = 20
     registry_db: str = "/data/private/_system/links.db"
 
