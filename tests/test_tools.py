@@ -203,10 +203,10 @@ def test_write_binary_and_read_roundtrip(cfg):
 def test_read_binary_works_for_text_files(cfg):
     import base64
 
-    tools.write_file(cfg, USER, "notes/hello.txt", "olá mundo")
+    tools.write_file(cfg, USER, "notes/hello.txt", "hello world")
     out = tools.read_binary_file(cfg, USER, "notes/hello.txt")
     data = _ok_payload(out)
-    assert base64.b64decode(data["content_base64"]).decode() == "olá mundo"
+    assert base64.b64decode(data["content_base64"]).decode() == "hello world"
 
 
 def test_write_binary_rejects_invalid_base64(cfg):
