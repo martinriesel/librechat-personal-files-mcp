@@ -236,3 +236,33 @@ def test_binary_upload_rejects_traversal(tmp_path: Path):
         )
     assert resp.status_code == 400
     assert ".." in resp.json()["error"] or "escape" in resp.json()["error"]
+
+
+def test_binary_upload_rejects_oversized_file(tmp_path: Path):
+    settings = AppSettings(
+        storage_root=str(tmp_path / "private"),
+        jwt_secret="x" * 64,
+        service_token="s" * 16,
+        registry_db=str(tmp_path / "private" / "_system" / "links.db"),
+    )
+    Path(settings.storage_root).mkdir(parents=True)
+    app = create_app(
+        AppContext(
+            settings=settings,
+            storage_cfg=storage.StorageConfig(
+                storage_root=Path(settings.storage_root),
+                max_binary_bytes=16,  # tiny limit for the test
+            ),
+        )
+    )
+    with TestClient(app) as c:
+        resp = c.post(
+            "/binary",
+            headers={"X-Service-Token": "s" * 16, "X-User-Id": USER},
+            files={"file": ("big.docx", b"x" * 1024, "application/octet-stream")},
+            data={"path": "office/big.docx"},
+        )
+    assert resp.status_code == 413
+    assert resp.json()["error"] == "file_too_large"
+    # nothing written
+    assert not (Path(settings.storage_root) / USER / "office" / "big.docx").exists()

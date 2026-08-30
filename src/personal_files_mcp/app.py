@@ -201,21 +201,35 @@ def register_binary_endpoint(app: FastAPI) -> None:
             )
 
         user_id: str = request.state.user_id
-        data = await file.read()
+
+        # Enforce the binary size limit BEFORE buffering the whole payload, so a
+        # client cannot exhaust memory by streaming an arbitrarily large file.
+        limit = ctx.storage_cfg.max_binary_bytes or storage.MAX_BINARY_BYTES
+        declared = _content_length(request)
+        if declared is not None and declared > limit:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "file_too_large"},
+            )
+
+        data = await file.read(limit + 1)
         if not data:
             return JSONResponse(
                 status_code=400,
                 content={"error": "empty_file"},
             )
+        if len(data) > limit:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "file_too_large"},
+            )
         try:
-            from . import storage
-
             info = storage.write(
                 ctx.storage_cfg,
                 user_id,
                 path,
                 data,
-                max_bytes=ctx.storage_cfg.max_binary_bytes or storage.MAX_BINARY_BYTES,
+                max_bytes=limit,
             )
         except storage.StorageError as exc:
             return JSONResponse(status_code=400, content={"error": str(exc)})
@@ -231,6 +245,16 @@ def register_binary_endpoint(app: FastAPI) -> None:
                 "sha256": hashlib.sha256(data).hexdigest(),
             }
         )
+
+
+def _content_length(request: Request) -> int | None:
+    raw = request.headers.get("Content-Length")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 def _service_token_matches(request: Request, expected: str) -> bool:

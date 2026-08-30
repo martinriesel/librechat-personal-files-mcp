@@ -56,9 +56,9 @@ def test_canary_skips_headings_and_empty_lines():
 
 
 def test_canary_strips_blockquote_marker():
-    content = "# Title\n\n> Servidor MCP para armazenamento.\n\nBody."
+    content = "# Title\n\n> MCP server for personal storage.\n\nBody."
     phrase = rag_client._canary_phrase(content)
-    assert phrase == "Servidor MCP para armazenamento."
+    assert phrase == "MCP server for personal storage."
 
 
 def test_canary_strips_list_markers():
