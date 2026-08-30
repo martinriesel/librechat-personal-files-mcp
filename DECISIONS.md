@@ -101,4 +101,4 @@ way they are.
 
 ## D023 — Canary: also strip blockquote/list markers and skip horizontal rules
 **Decision:** Extend `_strip_markdown` to also remove `>` blockquote markers, `-`/`*`/`+` list bullets, and `1.` ordered-list markers; `_clean_for_canary` skips horizontal rules (`---`, `***`, `___`).
-**Reason:** Same class of failure as D022, but for documents starting with a blockquote or list. The rag_api loader strips `>`/bullets, but the canary kept them, so the substring match failed (e.g. `> Servidor MCP ...` vs `Servidor MCP ...`), causing a false `rag_canary_failed` and chunk deletion.
+**Reason:** Same class of failure as D022, but for documents starting with a blockquote or list. The rag_api loader strips `>`/bullets, but the canary kept them, so the substring match failed (e.g. `> MCP server ...` vs `MCP server ...`), causing a false `rag_canary_failed` and chunk deletion.
