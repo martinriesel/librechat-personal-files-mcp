@@ -19,7 +19,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, UploadFile
 from fastmcp import Context, FastMCP
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 def build_context() -> AppContext:
     settings = AppSettings.from_env()
     storage_cfg = storage.StorageConfig(
-        storage_root=Path(settings.storage_root)
+        storage_root=Path(settings.storage_root),
+        max_file_bytes=settings.max_file_size_mb * 1024 * 1024,
+        max_binary_bytes=settings.max_binary_file_mb * 1024 * 1024,
     )
     return AppContext(settings=settings, storage_cfg=storage_cfg)
 
@@ -78,6 +80,7 @@ def create_app(context: AppContext | None = None) -> FastAPI:
     # precedence.
     register_health(app)
     register_public_endpoint(app)
+    register_binary_endpoint(app)
     app.mount("/", mcp_app)
 
     return app
@@ -164,6 +167,77 @@ def register_public_endpoint(app: FastAPI) -> None:
             content={"error": "method_not_allowed"},
             headers={"Allow": "GET, HEAD"},
         )
+
+
+def register_binary_endpoint(app: FastAPI) -> None:
+    """Mount ``POST /binary`` for service-to-service binary ingestion.
+
+    Authentication is two-layered:
+        1. ``IdentityMiddleware`` validates ``X-User-Id`` (fail-closed) and
+           stores it in ``request.state.user_id``.
+        2. The handler checks ``X-Service-Token`` against ``SERVICE_TOKEN`` so
+           only known services (e.g. the office-documents fork) can write on
+           behalf of a user. Without a configured token the endpoint refuses
+           (503).
+    """
+
+    @app.post("/binary")
+    async def _binary_upload(
+        request: Request,
+        file: UploadFile = File(...),  # noqa: B008 - FastAPI dependency marker
+        path: str = Form(...),  # noqa: B008 - FastAPI dependency marker
+    ) -> JSONResponse:
+        ctx: AppContext = app.state.app_context
+
+        if not ctx.settings.service_token_usable():
+            return JSONResponse(
+                status_code=503,
+                content={"error": "service_token_not_configured"},
+            )
+        if not _service_token_matches(request, ctx.settings.service_token):
+            return JSONResponse(
+                status_code=401,
+                content={"error": "invalid_service_token"},
+            )
+
+        user_id: str = request.state.user_id
+        data = await file.read()
+        if not data:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "empty_file"},
+            )
+        try:
+            from . import storage
+
+            info = storage.write(
+                ctx.storage_cfg,
+                user_id,
+                path,
+                data,
+                max_bytes=ctx.storage_cfg.max_binary_bytes or storage.MAX_BINARY_BYTES,
+            )
+        except storage.StorageError as exc:
+            return JSONResponse(status_code=400, content={"error": str(exc)})
+
+        import hashlib
+
+        return JSONResponse(
+            {
+                "path": info.relative_path,
+                "filename": info.name,
+                "mime_type": info.mime_type,
+                "size_bytes": info.size_bytes,
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        )
+
+
+def _service_token_matches(request: Request, expected: str) -> bool:
+    import secrets
+
+    supplied = request.headers.get("X-Service-Token", "")
+    return secrets.compare_digest(supplied, expected)
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +372,31 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
         return tools.edit_file(app_ctx.storage_cfg, uid, path, edits)
+
+    @mcp.tool()
+    def write_binary_file(ctx: Context, path: str, content_base64: str) -> str:
+        """Write a binary file (base64 payload) to personal storage.
+
+        Used for Office documents and other non-UTF-8 content. Does not index.
+
+        Args:
+            path: relative file path (e.g. ``office/relatorio.docx``).
+            content_base64: base64-encoded file contents.
+        """
+        app_ctx = _get_app_ctx(ctx)
+        uid = _get_user_id(ctx)
+        return tools.write_binary_file(app_ctx.storage_cfg, uid, path, content_base64)
+
+    @mcp.tool()
+    def read_binary_file(ctx: Context, path: str) -> str:
+        """Read any file as base64, including binary files.
+
+        Args:
+            path: relative file path.
+        """
+        app_ctx = _get_app_ctx(ctx)
+        uid = _get_user_id(ctx)
+        return tools.read_binary_file(app_ctx.storage_cfg, uid, path)
 
     # --- Documentation ---
 

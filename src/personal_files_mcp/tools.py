@@ -11,6 +11,8 @@ directly. The tools never accept a user_id as a free argument from the LLM.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import datetime as _dt
 import hashlib
@@ -331,6 +333,75 @@ def edit_file(
         return _err("update_failed", str(exc))
     _maybe_register_doc(cfg, user_id, path)
     return _ok({"file": asdict(info), "edits_applied": len(normalized)})
+
+
+# ---------------------------------------------------------------------------
+# Binary file tools
+# ---------------------------------------------------------------------------
+
+
+def write_binary_file(
+    cfg: storage.StorageConfig, user_id: str, path: str, content_base64: str
+) -> str:
+    """Write a binary file (base64 payload) to the user's private storage.
+
+    Uses the binary size limit (``MAX_BINARY_FILE_MB``). Does not touch the
+    documentation index (binary files are not RAG-able).
+    """
+    if not isinstance(content_base64, str):
+        return _err("invalid_content", "content_base64 must be a base64 string")
+    try:
+        data = base64.b64decode(content_base64, validate=True)
+    except (ValueError, binascii.Error):
+        return _err("invalid_base64", "content is not valid base64")
+    if not data:
+        return _err("invalid_content", "content is empty")
+    try:
+        info = storage.write(
+            cfg,
+            user_id,
+            path,
+            data,
+            max_bytes=cfg.max_binary_bytes or storage.MAX_BINARY_BYTES,
+        )
+    except storage.StorageError as exc:
+        return _err("write_failed", str(exc))
+    return _ok(
+        {
+            "file": asdict(info),
+            "size_bytes": len(data),
+            "sha256": _hash_bytes(data),
+            "indexed": False,
+        }
+    )
+
+
+def read_binary_file(
+    cfg: storage.StorageConfig, user_id: str, path: str
+) -> str:
+    """Read any file as base64 (works for binary and text alike).
+
+    Unlike ``read_file`` there is no UTF-8 requirement and no 2 MB display cap.
+    """
+    try:
+        info = storage.stat(cfg, user_id, path)
+    except storage.StorageError as exc:
+        return _err("not_found", str(exc))
+    if info.is_directory:
+        return _err("is_directory", "path is a directory")
+    try:
+        data = storage.read(cfg, user_id, path)
+    except storage.StorageError as exc:
+        return _err("read_failed", str(exc))
+    return _ok(
+        {
+            "content_base64": base64.b64encode(data).decode("ascii"),
+            "is_binary": True,
+            "size_bytes": len(data),
+            "sha256": _hash_bytes(data),
+            "mime_type": info.mime_type,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

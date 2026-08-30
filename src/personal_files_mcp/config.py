@@ -35,7 +35,12 @@ class AppSettings:
     jwt_secret: str = ""
     public_base_url: str = "https://your-domain.example/files"
     max_file_size_mb: int = 20
+    max_binary_file_mb: int = 50
+    service_token: str = ""
     registry_db: str = "/data/private/_system/links.db"
+
+    def service_token_usable(self) -> bool:
+        return bool(self.service_token) and len(self.service_token) >= 16
 
     @classmethod
     def from_env(cls) -> AppSettings:
@@ -47,6 +52,8 @@ class AppSettings:
             jwt_secret=_env_str("JWT_SECRET", cls.jwt_secret),
             public_base_url=_env_str("PUBLIC_BASE_URL", cls.public_base_url),
             max_file_size_mb=_env_int("MAX_FILE_SIZE_MB", cls.max_file_size_mb),
+            max_binary_file_mb=_env_int("MAX_BINARY_FILE_MB", cls.max_binary_file_mb),
+            service_token=_env_str("SERVICE_TOKEN", cls.service_token),
             registry_db=_env_str("REGISTRY_DB", cls.registry_db),
         )
 

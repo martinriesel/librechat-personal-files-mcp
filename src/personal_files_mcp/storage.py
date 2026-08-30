@@ -41,8 +41,38 @@ RESERVED_SEGMENTS: frozenset[str] = frozenset({".git", ".ssh", "_system"})
 MAX_NAME_LEN = 255
 MAX_TOTAL_PATH_LEN = 1024
 MAX_FILE_BYTES = 20 * 1024 * 1024  # default mirror of MAX_FILE_SIZE_MB; may be raised by config
+MAX_BINARY_BYTES = 50 * 1024 * 1024  # default mirror of MAX_BINARY_FILE_MB
 
 _DEFAULT_MIMETYPE = "application/octet-stream"
+
+# Explicit MIME mapping for extensions the stdlib ``mimetypes`` module misses
+# on slim containers (e.g. ``docx``/``xlsx``/``pptx`` → ``None``). Consulted
+# before ``mimetypes.guess_type`` so published/read Office files carry a real
+# Content-Type instead of falling back to ``application/octet-stream``.
+_KNOWN_MIMETYPES: dict[str, str] = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".docm": "application/vnd.ms-word.document.macroEnabled.12",
+    ".dotx": "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ".xltx": "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".pptm": "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+    ".potx": "application/vnd.openxmlformats-officedocument.presentationml.template",
+    ".doc": "application/msword",
+    ".xls": "application/vnd.ms-excel",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".eml": "message/rfc822",
+    ".pdf": "application/pdf",
+}
+
+
+def _guess_mime(name: str) -> str:
+    mime, _ = mimetypes.guess_type(name)
+    if mime is not None:
+        return mime
+    ext = Path(name).suffix.lower()
+    return _KNOWN_MIMETYPES.get(ext, _DEFAULT_MIMETYPE)
 
 
 class StorageError(Exception):
@@ -80,6 +110,8 @@ class StorageConfig:
     max_total_path_len: int = MAX_TOTAL_PATH_LEN
     umask: int = 0o002
     follow_symlinks: bool = False
+    max_file_bytes: int | None = None  # None -> MAX_FILE_BYTES
+    max_binary_bytes: int | None = None  # None -> MAX_BINARY_BYTES
 
     def with_root(self, root: Path | str) -> StorageConfig:
         return StorageConfig(
@@ -89,6 +121,8 @@ class StorageConfig:
             max_total_path_len=self.max_total_path_len,
             umask=self.umask,
             follow_symlinks=self.follow_symlinks,
+            max_file_bytes=self.max_file_bytes,
+            max_binary_bytes=self.max_binary_bytes,
         )
 
 
@@ -209,13 +243,7 @@ def _stat_info(cfg: StorageConfig, user_id: str, path: Path, rel: str) -> FileIn
     st = path.stat()
     is_dir = path.is_dir()
     size = 0 if is_dir else st.st_size
-    mime: str | None
-    if is_dir:
-        mime = "inode/directory"
-    else:
-        mime, _ = mimetypes.guess_type(path.name)
-        if mime is None:
-            mime = _DEFAULT_MIMETYPE
+    mime = "inode/directory" if is_dir else _guess_mime(path.name)
     return FileInfo(
         user_id=user_id,
         relative_path=rel,
@@ -239,10 +267,15 @@ def write(
     user_id: str,
     relative_path: str,
     content: bytes,
+    max_bytes: int | None = None,
 ) -> FileInfo:
     if not isinstance(content, (bytes, bytearray)):
         raise StorageError("content must be bytes")
-    if len(content) > MAX_FILE_BYTES:
+    if max_bytes is not None:
+        limit = max_bytes
+    else:
+        limit = cfg.max_file_bytes if cfg.max_file_bytes is not None else MAX_FILE_BYTES
+    if len(content) > limit:
         raise StorageError("file too large")
 
     path = resolve(cfg, user_id, relative_path)
@@ -257,9 +290,16 @@ def update(
     user_id: str,
     relative_path: str,
     content: bytes,
+    max_bytes: int | None = None,
 ) -> FileInfo:
     if not isinstance(content, (bytes, bytearray)):
         raise StorageError("content must be bytes")
+    if max_bytes is not None:
+        limit = max_bytes
+    else:
+        limit = cfg.max_file_bytes if cfg.max_file_bytes is not None else MAX_FILE_BYTES
+    if len(content) > limit:
+        raise StorageError("file too large")
     path = resolve(cfg, user_id, relative_path)
     if not path.exists() or path.is_dir():
         raise StorageError("file does not exist")

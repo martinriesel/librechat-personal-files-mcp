@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from personal_files_mcp import tools
+from personal_files_mcp import storage, tools
 
 USER = "5f8d3a4b2c1e0d0001a2b3c4"
 
@@ -175,3 +175,94 @@ def test_read_multiple_files_traversal_rejected(cfg):
     out = tools.read_multiple_files(cfg, USER, ["../escape.txt"])
     payload = _ok_payload(out)
     assert "error" in payload["files"]["../escape.txt"]
+
+
+# ---------------------------------------------------------------------------
+# Binary tools
+# ---------------------------------------------------------------------------
+
+
+def test_write_binary_and_read_roundtrip(cfg):
+    import base64
+
+    payload = b"\x50\x4b\x03\x04" + b"\x00" * 100  # fake PKZIP/office bytes
+    out = tools.write_binary_file(cfg, USER, "office/report.docx", base64.b64encode(payload).decode())
+    info = _ok_payload(out)
+    assert info["size_bytes"] == len(payload)
+    assert info["file"]["relative_path"] == "office/report.docx"
+    assert info["indexed"] is False
+
+    out = tools.read_binary_file(cfg, USER, "office/report.docx")
+    data = _ok_payload(out)
+    assert base64.b64decode(data["content_base64"]) == payload
+    assert data["is_binary"] is True
+    assert data["size_bytes"] == len(payload)
+    assert data["sha256"] == info["sha256"]
+
+
+def test_read_binary_works_for_text_files(cfg):
+    import base64
+
+    tools.write_file(cfg, USER, "notes/hello.txt", "olá mundo")
+    out = tools.read_binary_file(cfg, USER, "notes/hello.txt")
+    data = _ok_payload(out)
+    assert base64.b64decode(data["content_base64"]).decode() == "olá mundo"
+
+
+def test_write_binary_rejects_invalid_base64(cfg):
+    out = tools.write_binary_file(cfg, USER, "office/x.docx", "!!!not-base64!!!")
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "invalid_base64"
+
+
+def test_write_binary_rejects_empty(cfg):
+    out = tools.write_binary_file(cfg, USER, "office/x.docx", "")
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] in ("invalid_base64", "invalid_content")
+
+
+def test_write_binary_too_large_uses_binary_limit(cfg):
+    import base64
+
+    small_cfg = storage.StorageConfig(
+        storage_root=cfg.storage_root,
+        max_binary_bytes=4,
+    )
+    out = tools.write_binary_file(
+        small_cfg, USER, "office/big.docx", base64.b64encode(b"0123456789").decode()
+    )
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "write_failed"
+
+
+def test_write_binary_allows_larger_than_text_limit(cfg):
+    import base64
+
+    # 20 MB default text limit would reject this 100 KB binary; the binary
+    # limit (default 50 MB) accepts it.
+    small_text_cfg = storage.StorageConfig(
+        storage_root=cfg.storage_root,
+        max_file_bytes=1024,
+        max_binary_bytes=2 * 1024 * 1024,
+    )
+    payload = b"x" * (2048)
+    out = tools.write_binary_file(
+        small_text_cfg, USER, "office/ok.docx", base64.b64encode(payload).decode()
+    )
+    assert not out.startswith("ERROR:"), out
+
+
+def test_write_binary_traversal_rejected(cfg):
+    import base64
+
+    out = tools.write_binary_file(
+        cfg, USER, "../escape.docx", base64.b64encode(b"x").decode()
+    )
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] in ("write_failed", "invalid_path")
+
+
+def test_read_binary_missing_file(cfg):
+    out = tools.read_binary_file(cfg, USER, "office/nope.docx")
+    body = json.loads(out[len("ERROR: "):])
+    assert body["error"] == "not_found"

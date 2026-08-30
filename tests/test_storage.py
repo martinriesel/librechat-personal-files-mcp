@@ -153,6 +153,26 @@ def test_stat_returns_metadata(cfg):
     assert info.mime_type is not None
 
 
+def test_stat_office_mime_types(cfg):
+    expected = {
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "pdf": "application/pdf",
+        "eml": "message/rfc822",
+    }
+    for ext, mime in expected.items():
+        storage.write(cfg, USER, f"office/f.{ext}", b"data")
+        info = storage.stat(cfg, USER, f"office/f.{ext}")
+        assert info.mime_type == mime, ext
+
+
+def test_stat_unknown_extension_falls_back(cfg):
+    storage.write(cfg, USER, "f.zzz", b"data")
+    info = storage.stat(cfg, USER, "f.zzz")
+    assert info.mime_type == "application/octet-stream"
+
+
 def test_compute_sha256(cfg):
     storage.write(cfg, USER, "h.txt", b"abc")
     assert (

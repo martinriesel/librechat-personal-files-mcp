@@ -2,9 +2,16 @@
 
 MCP server providing per-user personal file storage, persistent documentation, RAG indexing/retrieval, and opaque public link publishing for LibreChat agents.
 
+> **Related fork**: this server is designed to work with a fork of
+> [ForLegalAI/mcp-ms-office-documents](https://github.com/ForLegalAI/mcp-ms-office-documents)
+> that stores generated Office documents (`.docx`/`.xlsx`/`.pptx`/`.eml`/`.xml`)
+> in the user's private storage here via the `POST /binary` endpoint. See the
+> fork's documentation for the `PERSONAL_FILES` upload strategy.
+
 ## Features
 
 - **Per-user storage**: Private files under `/data/private/<userId>/` with full CRUD, list, move operations.
+- **Binary file support**: `write_binary_file` / `read_binary_file` (base64) MCP tools plus a `POST /binary` multipart endpoint (service-token authenticated) so other services — e.g. the Office-documents fork — can store generated `.docx`/`.xlsx`/`.pptx` files per user.
 - **Documentation catalog**: `save_documentation` / `update_documentation` write to `docs/` and update `memory-index.json` (schema v2).
 - **RAG integration**: `index_document` sends content to rag_api via `POST /embed` with canary verification; `search_knowledge` for semantic search; `remove_from_knowledge` for deletion.
 - **Public publishing**: `publish_file` creates cryptographically random tokens (≥128 bits); files served via Nginx `X-Accel-Redirect` with `Content-Disposition: attachment`, `nosniff`, `no-store`.
@@ -139,6 +146,28 @@ mcpServers:
 
 Restart LibreChat. The `personal-files` server will be available to your agents.
 
+### 6. Service-to-service binary uploads (`POST /binary`)
+
+Other services can store files in a user's private storage without speaking
+MCP. Set `SERVICE_TOKEN` on this server and have the service send a multipart
+request:
+
+```
+POST http://librechat-personal-files:8080/binary
+X-Service-Token: <SERVICE_TOKEN>
+X-User-Id: <userId>
+
+form: file=<bytes>, path=office/report.docx
+```
+
+Both `SERVICE_TOKEN` and a valid `X-User-Id` are required (fail-closed); the
+path goes through the same path-safety checks as every other tool. On success
+it returns `{path, filename, mime_type, size_bytes, sha256}`.
+
+This is how the [Office-documents fork](https://github.com/ForLegalAI/mcp-ms-office-documents)
+stores generated `.docx`/`.xlsx`/`.pptx` files per user (see its `PERSONAL_FILES`
+strategy).
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -149,7 +178,9 @@ Restart LibreChat. The `personal-files` server will be available to your agents.
 | `RAG_API_URL` | `http://rag_api:8000` | rag_api endpoint |
 | `JWT_SECRET` | *required* | HS256 secret shared with LibreChat/rag_api (≥32 chars) |
 | `PUBLIC_BASE_URL` | `https://your-domain.example/files` | Base URL for public links |
-| `MAX_FILE_SIZE_MB` | `20` | Max upload size |
+| `MAX_FILE_SIZE_MB` | `20` | Max upload size for text files |
+| `MAX_BINARY_FILE_MB` | `50` | Max upload size for binary files (`/binary`, `write_binary_file`) |
+| `SERVICE_TOKEN` | *(empty)* | Shared token required by the `POST /binary` endpoint; without it the endpoint returns 503 |
 | `REGISTRY_DB` | `/data/private/_system/links.db` | SQLite registry for public links |
 
 ## MCP Tools
@@ -160,6 +191,8 @@ Restart LibreChat. The `personal-files` server will be available to your agents.
 - `read_file(path)` — read UTF-8 text; error for binary or >2 MB
 - `read_multiple_files(paths)` — read several text files at once
 - `write_file(path, content)` — write text (UTF-8), creates parent dirs
+- `write_binary_file(path, content_base64)` — write a binary file (e.g. Office documents); uses the binary size limit, never indexes
+- `read_binary_file(path)` — read any file as base64 (binary or text)
 - `update_file(path, content)` — update existing file
 - `edit_file(path, edits)` — find/replace text (each `oldText` must match exactly once)
 - `delete_file(path)` — delete file or directory

@@ -86,3 +86,153 @@ def test_files_route_bypasses_identity(client: TestClient):
     # Public endpoint — no identity required, but unknown token must 404
     resp = client.get("/files/nope")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /binary
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def bin_ctx(settings: AppSettings, tmp_path: Path) -> AppContext:
+    Path(settings.storage_root).mkdir(parents=True)
+    return AppContext(
+        settings=settings,
+        storage_cfg=storage.StorageConfig(
+            storage_root=Path(settings.storage_root),
+            max_file_bytes=1024,
+            max_binary_bytes=2 * 1024 * 1024,
+        ),
+    )
+
+
+@pytest.fixture
+def bin_client(bin_ctx: AppContext) -> TestClient:
+    app = create_app(bin_ctx)
+    with TestClient(app) as c:
+        yield c
+
+
+def _bin_headers(service_token: str = "s" * 16, user: str = USER) -> dict:
+    return {
+        "X-Service-Token": service_token,
+        "X-User-Id": user,
+    }
+
+
+def test_binary_upload_requires_service_token(bin_client: TestClient):
+    resp = bin_client.post(
+        "/binary",
+        headers={"X-User-Id": USER},
+        files={"file": ("r.docx", b"\x50\x4b", "application/octet-stream")},
+        data={"path": "office/r.docx"},
+    )
+    # settings fixture has no service_token -> 503
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "service_token_not_configured"
+
+
+def test_binary_upload_rejects_bad_token(tmp_path: Path):
+    settings = AppSettings(
+        storage_root=str(tmp_path / "private"),
+        jwt_secret="x" * 64,
+        service_token="s" * 16,
+        registry_db=str(tmp_path / "private" / "_system" / "links.db"),
+    )
+    Path(settings.storage_root).mkdir(parents=True)
+    app = create_app(
+        AppContext(
+            settings=settings,
+            storage_cfg=storage.StorageConfig(storage_root=Path(settings.storage_root)),
+        )
+    )
+    with TestClient(app) as c:
+        resp = c.post(
+            "/binary",
+            headers={"X-Service-Token": "wrong-token", "X-User-Id": USER},
+            files={"file": ("r.docx", b"\x50\x4b", "application/octet-stream")},
+            data={"path": "office/r.docx"},
+        )
+    assert resp.status_code == 401
+    assert resp.json()["error"] == "invalid_service_token"
+
+
+def test_binary_upload_requires_identity(tmp_path: Path):
+    settings = AppSettings(
+        storage_root=str(tmp_path / "private"),
+        jwt_secret="x" * 64,
+        service_token="s" * 16,
+        registry_db=str(tmp_path / "private" / "_system" / "links.db"),
+    )
+    Path(settings.storage_root).mkdir(parents=True)
+    app = create_app(
+        AppContext(
+            settings=settings,
+            storage_cfg=storage.StorageConfig(storage_root=Path(settings.storage_root)),
+        )
+    )
+    with TestClient(app) as c:
+        resp = c.post(
+            "/binary",
+            headers={"X-Service-Token": "s" * 16},
+            files={"file": ("r.docx", b"\x50\x4b", "application/octet-stream")},
+            data={"path": "office/r.docx"},
+        )
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "missing_user_identity"
+
+
+def test_binary_upload_success(tmp_path: Path):
+    settings = AppSettings(
+        storage_root=str(tmp_path / "private"),
+        jwt_secret="x" * 64,
+        service_token="s" * 16,
+        registry_db=str(tmp_path / "private" / "_system" / "links.db"),
+    )
+    Path(settings.storage_root).mkdir(parents=True)
+    app = create_app(
+        AppContext(
+            settings=settings,
+            storage_cfg=storage.StorageConfig(storage_root=Path(settings.storage_root)),
+        )
+    )
+    payload = b"\x50\x4b\x03\x04" + b"\x00" * 100
+    with TestClient(app) as c:
+        resp = c.post(
+            "/binary",
+            headers={"X-Service-Token": "s" * 16, "X-User-Id": USER},
+            files={"file": ("relatorio.docx", payload, "application/octet-stream")},
+            data={"path": "office/relatorio.docx"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["path"] == "office/relatorio.docx"
+    assert body["size_bytes"] == len(payload)
+    assert body["filename"] == "relatorio.docx"
+    # file landed in user root
+    assert (Path(settings.storage_root) / USER / "office" / "relatorio.docx").read_bytes() == payload
+
+
+def test_binary_upload_rejects_traversal(tmp_path: Path):
+    settings = AppSettings(
+        storage_root=str(tmp_path / "private"),
+        jwt_secret="x" * 64,
+        service_token="s" * 16,
+        registry_db=str(tmp_path / "private" / "_system" / "links.db"),
+    )
+    Path(settings.storage_root).mkdir(parents=True)
+    app = create_app(
+        AppContext(
+            settings=settings,
+            storage_cfg=storage.StorageConfig(storage_root=Path(settings.storage_root)),
+        )
+    )
+    with TestClient(app) as c:
+        resp = c.post(
+            "/binary",
+            headers={"X-Service-Token": "s" * 16, "X-User-Id": USER},
+            files={"file": ("e.docx", b"x", "application/octet-stream")},
+            data={"path": "../escape.docx"},
+        )
+    assert resp.status_code == 400
+    assert ".." in resp.json()["error"] or "escape" in resp.json()["error"]
