@@ -28,7 +28,7 @@ from . import storage
 logger = logging.getLogger(__name__)
 
 INDEX_FILENAME = "memory-index.json"
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 INDEX_TMP_SUFFIX = ".tmp"
 LOCK_TIMEOUT_SECONDS = 10.0
 
@@ -58,6 +58,9 @@ class DocumentEntry:
     indexing_status: str = "not_indexed"
     public: bool = False
     public_token: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
+    conversation_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.indexing_status not in VALID_INDEXING_STATUS:
@@ -86,6 +89,9 @@ class DocumentEntry:
             "indexing_status": self.indexing_status,
             "public": self.public,
             "public_token": self.public_token,
+            "project_id": self.project_id,
+            "project_name": self.project_name,
+            "conversation_id": self.conversation_id,
         }
 
     @classmethod
@@ -106,6 +112,9 @@ class DocumentEntry:
             indexing_status=data.get("indexing_status", "not_indexed"),
             public=bool(data.get("public", False)),
             public_token=data.get("public_token"),
+            project_id=data.get("project_id"),
+            project_name=data.get("project_name"),
+            conversation_id=data.get("conversation_id"),
         )
 
 
@@ -172,6 +181,7 @@ class DocIndex:
 
     def _atomic_write(self, data: IndexData) -> None:
         self._user_root.mkdir(parents=True, exist_ok=True)
+        data.version = INDEX_VERSION
         data.updated_at = _utc_now_iso()
         payload = json.dumps(data.to_dict(), ensure_ascii=False, indent=2)
         tmp = self._index_path.with_suffix(INDEX_TMP_SUFFIX)
@@ -190,9 +200,18 @@ class DocIndex:
 
     # -------------------------------------------------------------- queries
 
-    def list_documents(self) -> list[DocumentEntry]:
+    def list_documents(
+        self,
+        project_id: str | None = None,
+        unassigned_only: bool = False,
+    ) -> list[DocumentEntry]:
         with self._thread_lock:
-            return list(self._read().documents)
+            docs = list(self._read().documents)
+            if project_id is not None:
+                return [d for d in docs if d.project_id == project_id]
+            if unassigned_only:
+                return [d for d in docs if not d.project_id]
+            return docs
 
     def get(self, file_path: str) -> DocumentEntry | None:
         for doc in self.list_documents():
@@ -207,6 +226,28 @@ class DocIndex:
         return None
 
     # -------------------------------------------------------------- mutators
+
+    def set_project(
+        self,
+        file_path: str,
+        project_id: str | None,
+        project_name: str | None = None,
+        conversation_id: str | None = None,
+    ) -> DocumentEntry | None:
+        captured: dict[str, DocumentEntry | None] = {"entry": None}
+
+        def _do(data: IndexData) -> None:
+            for doc in data.documents:
+                if doc.file == file_path:
+                    doc.project_id = project_id
+                    doc.project_name = project_name
+                    if conversation_id is not None:
+                        doc.conversation_id = conversation_id
+                    captured["entry"] = doc
+                    return
+
+        self._mutate(_do)
+        return captured["entry"]
 
     def upsert(self, entry: DocumentEntry) -> DocumentEntry:
         captured: dict[str, DocumentEntry] = {}

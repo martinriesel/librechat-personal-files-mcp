@@ -123,3 +123,82 @@ def test_priority_bounds():
         docindex.DocumentEntry(file="x.md", priority=11)
     with pytest.raises(ValueError):
         docindex.DocumentEntry(file="x.md", priority=-1)
+
+
+def test_schema_v3_defaults_and_roundtrip(cfg, tmp_root):
+    idx = docindex.new_docindex(cfg, USER)
+    entry = docindex.DocumentEntry(
+        file="docs/proj.md",
+        title="Project Doc",
+        project_id="proj_123",
+        project_name="Alphaplan",
+        conversation_id="conv_abc",
+    )
+    idx.upsert(entry)
+
+    saved = idx.get("docs/proj.md")
+    assert saved is not None
+    assert saved.project_id == "proj_123"
+    assert saved.project_name == "Alphaplan"
+    assert saved.conversation_id == "conv_abc"
+
+    raw = json.loads((tmp_root / USER / "memory-index.json").read_text())
+    assert raw["version"] == 3
+    doc_raw = raw["documents"][0]
+    assert doc_raw["project_id"] == "proj_123"
+    assert doc_raw["project_name"] == "Alphaplan"
+    assert doc_raw["conversation_id"] == "conv_abc"
+
+
+def test_backward_compatibility_loads_v2_without_project(cfg, tmp_root):
+    user_root = tmp_root / USER
+    user_root.mkdir(parents=True)
+    v2_data = {
+        "version": 2,
+        "updated_at": "2026-11-01T00:00:00Z",
+        "documents": [
+            {
+                "file": "legacy.md",
+                "title": "Old Doc",
+                "indexing_status": "indexed",
+                "rag_file_id": "rag-123",
+            }
+        ],
+    }
+    (user_root / "memory-index.json").write_text(json.dumps(v2_data))
+    idx = docindex.new_docindex(cfg, USER)
+    docs = idx.list_documents()
+    assert len(docs) == 1
+    assert docs[0].title == "Old Doc"
+    assert docs[0].project_id is None
+    assert docs[0].project_name is None
+    assert docs[0].conversation_id is None
+
+
+def test_list_documents_filtering(cfg):
+    idx = docindex.new_docindex(cfg, USER)
+    idx.upsert(docindex.DocumentEntry(file="a.md", project_id="p1"))
+    idx.upsert(docindex.DocumentEntry(file="b.md", project_id="p1"))
+    idx.upsert(docindex.DocumentEntry(file="c.md", project_id="p2"))
+    idx.upsert(docindex.DocumentEntry(file="general.md"))
+
+    assert len(idx.list_documents()) == 4
+    assert [d.file for d in idx.list_documents(project_id="p1")] == ["a.md", "b.md"]
+    assert [d.file for d in idx.list_documents(project_id="p2")] == ["c.md"]
+    assert [d.file for d in idx.list_documents(project_id="nonexistent")] == []
+    assert [d.file for d in idx.list_documents(unassigned_only=True)] == ["general.md"]
+
+
+def test_set_project(cfg):
+    idx = docindex.new_docindex(cfg, USER)
+    idx.upsert(docindex.DocumentEntry(file="note.md", title="Note"))
+    updated = idx.set_project("note.md", "p1", "Project 1", "conv1")
+    assert updated is not None
+    assert updated.project_id == "p1"
+    assert updated.project_name == "Project 1"
+    assert updated.conversation_id == "conv1"
+
+    # Verify retrieval
+    got = idx.get("note.md")
+    assert got.project_id == "p1"
+

@@ -514,7 +514,7 @@ def register_mcp_tools(mcp: FastMCP) -> None:
     # --- Documentation ---
 
     @mcp.tool()
-    def save_documentation(
+    async def save_documentation(
         ctx: Context,
         filename: str,
         content: str,
@@ -522,20 +522,52 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         description: str | None = None,
         tags: list[str] | None = None,
         topics: list[str] | None = None,
+        project_id: str | None = None,
+        project_name: str | None = None,
     ) -> str:
         """Save a documentation file under ``docs/`` and update the user index.
 
         Does not publish or index automatically; suggests ``index_document`` as
-        the follow-up.
+        the follow-up. Automatically associates with the active project if running
+        inside a LibreChat project.
         """
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
+
+        request = ctx.request_context.request
+        req_ctx = project_context.get_request_context()
+        conv_id = getattr(request.state, "conversation_id", None)
+        if req_ctx and req_ctx.conversation_id:
+            conv_id = conv_id or req_ctx.conversation_id
+
+        if not project_id and conv_id and getattr(app_ctx, "project_resolver", None):
+            res = await app_ctx.project_resolver.resolve(
+                app_ctx.settings,
+                user_id=uid,
+                conversation_id=conv_id,
+                conv_status=getattr(request.state, "conversation_status", "valid"),
+                request_id=getattr(request.state, "request_id", ""),
+            )
+            if res.status == "project":
+                project_id = res.project_id
+                project_name = res.project_name
+
         return tools.save_documentation(
-            app_ctx.storage_cfg, uid, filename, content, title, description, tags, topics
+            app_ctx.storage_cfg,
+            uid,
+            filename,
+            content,
+            title,
+            description,
+            tags,
+            topics,
+            project_id=project_id,
+            project_name=project_name,
+            conversation_id=conv_id,
         )
 
     @mcp.tool()
-    def update_documentation(
+    async def update_documentation(
         ctx: Context,
         filename: str,
         content: str,
@@ -543,6 +575,8 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         description: str | None = None,
         tags: list[str] | None = None,
         topics: list[str] | None = None,
+        project_id: str | None = None,
+        project_name: str | None = None,
     ) -> str:
         """Update an existing documentation file and refresh its index entry.
 
@@ -550,8 +584,37 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         """
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
+
+        request = ctx.request_context.request
+        req_ctx = project_context.get_request_context()
+        conv_id = getattr(request.state, "conversation_id", None)
+        if req_ctx and req_ctx.conversation_id:
+            conv_id = conv_id or req_ctx.conversation_id
+
+        if not project_id and conv_id and getattr(app_ctx, "project_resolver", None):
+            res = await app_ctx.project_resolver.resolve(
+                app_ctx.settings,
+                user_id=uid,
+                conversation_id=conv_id,
+                conv_status=getattr(request.state, "conversation_status", "valid"),
+                request_id=getattr(request.state, "request_id", ""),
+            )
+            if res.status == "project":
+                project_id = res.project_id
+                project_name = res.project_name
+
         return tools.update_documentation(
-            app_ctx.storage_cfg, uid, filename, content, title, description, tags, topics
+            app_ctx.storage_cfg,
+            uid,
+            filename,
+            content,
+            title,
+            description,
+            tags,
+            topics,
+            project_id=project_id,
+            project_name=project_name,
+            conversation_id=conv_id,
         )
 
     @mcp.tool()
@@ -560,6 +623,19 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
         return tools.get_document_metadata(app_ctx.storage_cfg, uid, filename)
+
+    @mcp.tool()
+    def list_documentation(
+        ctx: Context,
+        project_id: str | None = None,
+        tag: str | None = None,
+    ) -> str:
+        """List documentation files and metadata registered in the memory index."""
+        app_ctx = _get_app_ctx(ctx)
+        uid = _get_user_id(ctx)
+        return tools.list_documentation(
+            app_ctx.storage_cfg, uid, project_id=project_id, tag=tag
+        )
 
     # --- Publishing ---
 
@@ -609,16 +685,51 @@ def register_mcp_tools(mcp: FastMCP) -> None:
     # --- RAG ---
 
     @mcp.tool()
-    def search_knowledge(ctx: Context, query: str, limit: int = 8) -> str:
-        """Semantic search over the user's indexed documents.
+    async def search_knowledge(
+        ctx: Context,
+        query: str,
+        limit: int = 8,
+        project_id: str | None = None,
+        scope: str = "auto",
+    ) -> str:
+        """Semantic search over the user's indexed documents with project scoping.
 
         Args:
             query: free-text question.
             limit: number of results to return (1..50).
+            project_id: optional project ID to restrict search.
+            scope: search scope ('auto', 'project', 'personal', 'all').
+                   Defaults to 'auto' (scoped to active project if in a project conversation,
+                   otherwise searches all user documents).
         """
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
-        return tools.search_knowledge(app_ctx.storage_cfg, uid, query, limit)
+
+        request = ctx.request_context.request
+        req_ctx = project_context.get_request_context()
+        conv_id = getattr(request.state, "conversation_id", None)
+        if req_ctx and req_ctx.conversation_id:
+            conv_id = conv_id or req_ctx.conversation_id
+
+        if not project_id and conv_id and getattr(app_ctx, "project_resolver", None):
+            res = await app_ctx.project_resolver.resolve(
+                app_ctx.settings,
+                user_id=uid,
+                conversation_id=conv_id,
+                conv_status=getattr(request.state, "conversation_status", "valid"),
+                request_id=getattr(request.state, "request_id", ""),
+            )
+            if res.status == "project":
+                project_id = res.project_id
+
+        return tools.search_knowledge(
+            app_ctx.storage_cfg,
+            uid,
+            query,
+            limit=limit,
+            project_id=project_id,
+            scope=scope,
+        )
 
     @mcp.tool()
     def index_document(ctx: Context, path: str) -> str:

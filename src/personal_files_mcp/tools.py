@@ -14,6 +14,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import dataclasses
 import datetime as _dt
 import hashlib
 import json
@@ -22,7 +23,7 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
-from . import docindex, storage
+from . import docindex, project_context, storage
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,8 @@ def delete_file(cfg: storage.StorageConfig, user_id: str, path: str) -> str:
         storage.delete(cfg, user_id, path)
     except storage.StorageError as exc:
         return _err("delete_failed", str(exc))
+    with contextlib.suppress(Exception):
+        docindex.new_docindex(cfg, user_id).remove(path)
     return _ok({"deleted": path})
 
 
@@ -207,6 +210,13 @@ def move_file(
         storage.move(cfg, user_id, src, dst)
     except storage.StorageError as exc:
         return _err("move_failed", str(exc))
+    with contextlib.suppress(Exception):
+        idx = docindex.new_docindex(cfg, user_id)
+        existing = idx.get(src)
+        if existing is not None:
+            updated = dataclasses.replace(existing, file=dst)
+            idx.upsert(updated)
+            idx.remove(src)
     return _ok({"moved": {"src": src, "dst": dst}})
 
 
@@ -432,6 +442,9 @@ def save_documentation(
     description: str | None = None,
     tags: list[str] | None = None,
     topics: list[str] | None = None,
+    project_id: str | None = None,
+    project_name: str | None = None,
+    conversation_id: str | None = None,
 ) -> str:
     if not isinstance(content, str):
         return _err("invalid_content", "content must be a UTF-8 string")
@@ -445,25 +458,36 @@ def save_documentation(
     except storage.StorageError as exc:
         return _err("write_failed", str(exc))
 
+    req_ctx = project_context.get_request_context()
+    resolved_proj_id = project_id or (req_ctx.project_id if req_ctx else None)
+    resolved_proj_name = project_name or (req_ctx.project_name if req_ctx else None)
+    resolved_conv_id = conversation_id or (req_ctx.conversation_id if req_ctx else None)
+
     entry = docindex.DocumentEntry(
         file=rel,
         title=title or "",
         description=description or "",
         tags=list(tags or []),
         topics=list(topics or []),
+        project_id=resolved_proj_id,
+        project_name=resolved_proj_name,
+        conversation_id=resolved_conv_id,
     )
     docindex.new_docindex(cfg, user_id).upsert(entry)
     info = storage.stat(cfg, user_id, rel)
-    return _ok(
-        {
-            "file": rel,
-            "saved": True,
-            "indexed": False,
-            "published": False,
-            "suggestion": "Call index_document to add to knowledge base",
-            "stat": asdict(info),
-        }
-    )
+    payload: dict[str, Any] = {
+        "file": rel,
+        "saved": True,
+        "indexed": False,
+        "published": False,
+        "suggestion": "Call index_document to add to knowledge base",
+        "stat": asdict(info),
+    }
+    if resolved_proj_id:
+        payload["project_id"] = resolved_proj_id
+    if resolved_proj_name:
+        payload["project_name"] = resolved_proj_name
+    return _ok(payload)
 
 
 def update_documentation(
@@ -475,6 +499,9 @@ def update_documentation(
     description: str | None = None,
     tags: list[str] | None = None,
     topics: list[str] | None = None,
+    project_id: str | None = None,
+    project_name: str | None = None,
+    conversation_id: str | None = None,
 ) -> str:
     if not isinstance(content, str):
         return _err("invalid_content", "content must be a UTF-8 string")
@@ -493,6 +520,20 @@ def update_documentation(
         return _err("update_failed", str(exc))
 
     existing = docindex.new_docindex(cfg, user_id).get(rel) or docindex.DocumentEntry(file=rel)
+    req_ctx = project_context.get_request_context()
+
+    resolved_proj_id = project_id if project_id is not None else existing.project_id
+    if resolved_proj_id is None and req_ctx and req_ctx.project_id:
+        resolved_proj_id = req_ctx.project_id
+
+    resolved_proj_name = project_name if project_name is not None else existing.project_name
+    if resolved_proj_name is None and req_ctx and req_ctx.project_name:
+        resolved_proj_name = req_ctx.project_name
+
+    resolved_conv_id = conversation_id if conversation_id is not None else existing.conversation_id
+    if resolved_conv_id is None and req_ctx and req_ctx.conversation_id:
+        resolved_conv_id = req_ctx.conversation_id
+
     entry = docindex.DocumentEntry(
         file=rel,
         title=title if title is not None else existing.title,
@@ -507,13 +548,42 @@ def update_documentation(
         indexing_status=existing.indexing_status,
         public=existing.public,
         public_token=existing.public_token,
+        project_id=resolved_proj_id,
+        project_name=resolved_proj_name,
+        conversation_id=resolved_conv_id,
     )
     docindex.new_docindex(cfg, user_id).upsert(entry)
+    payload: dict[str, Any] = {
+        "file": rel,
+        "updated": True,
+        "suggestion": "Call index_document to refresh knowledge base",
+    }
+    if resolved_proj_id:
+        payload["project_id"] = resolved_proj_id
+    if resolved_proj_name:
+        payload["project_name"] = resolved_proj_name
+    return _ok(payload)
+
+
+def list_documentation(
+    cfg: storage.StorageConfig,
+    user_id: str,
+    project_id: str | None = None,
+    tag: str | None = None,
+    unassigned_only: bool = False,
+) -> str:
+    """List documentation catalog entries for the user, with optional filtering."""
+    idx = docindex.new_docindex(cfg, user_id)
+    docs = idx.list_documents(project_id=project_id, unassigned_only=unassigned_only)
+    if tag:
+        tag_lower = tag.lower()
+        docs = [d for d in docs if any(t.lower() == tag_lower for t in d.tags)]
     return _ok(
         {
-            "file": rel,
-            "updated": True,
-            "suggestion": "Call index_document to refresh knowledge base",
+            "count": len(docs),
+            "project_id": project_id,
+            "tag": tag,
+            "documents": [d.to_dict() for d in docs],
         }
     )
 
@@ -640,6 +710,8 @@ def search_knowledge(
     user_id: str,
     query: str,
     limit: int = 8,
+    project_id: str | None = None,
+    scope: str = "auto",
 ) -> str:
     from . import rag_client
 
@@ -647,26 +719,55 @@ def search_knowledge(
         return _err("invalid_query", "query must be a non-empty string")
     if not isinstance(limit, int) or limit < 1 or limit > 50:
         return _err("invalid_limit", "limit must be 1..50")
+    if scope not in ("auto", "project", "personal", "all"):
+        return _err("invalid_scope", f"unknown scope: {scope!r}")
     try:
         ctx = _resolve_publish_ctx(cfg)
     except RuntimeError:
         return _err("rag_unavailable", "AppContext not configured")
     if not ctx.settings.jwt_secret_usable():
         return _err("rag_disabled", "JWT_SECRET not configured or too short")
+
+    req_ctx = project_context.get_request_context()
+    resolved_proj_id = project_id or (req_ctx.project_id if req_ctx else None)
+
+    effective_scope = scope
+    if effective_scope == "auto":
+        effective_scope = "project" if resolved_proj_id else "all"
+
     index = docindex.new_docindex(cfg, user_id)
+    if effective_scope == "project":
+        if not resolved_proj_id:
+            return _err(
+                "missing_project",
+                "project scope requires project_id or active project context",
+            )
+        docs = index.list_documents(project_id=resolved_proj_id)
+    elif effective_scope == "personal":
+        docs = index.list_documents(unassigned_only=True)
+    else:  # "all"
+        docs = index.list_documents()
+
     file_ids = [
         d.rag_file_id
-        for d in index.list_documents()
+        for d in docs
         if d.rag_file_id and d.indexing_status == "indexed"
     ]
     if not file_ids:
+        note = (
+            f"no indexed documents for project '{resolved_proj_id}'"
+            if effective_scope == "project"
+            else "no indexed documents"
+        )
         return _ok(
             {
                 "query": query,
                 "limit": limit,
+                "scope": effective_scope,
+                "project_id": resolved_proj_id if effective_scope == "project" else None,
                 "count": 0,
                 "results": [],
-                "note": "no indexed documents",
+                "note": note,
             }
         )
 
@@ -681,6 +782,8 @@ def search_knowledge(
         {
             "query": query,
             "limit": limit,
+            "scope": effective_scope,
+            "project_id": resolved_proj_id if effective_scope == "project" else None,
             "count": len(results),
             "results": results,
         }
@@ -812,7 +915,19 @@ def _maybe_register_doc(
     except storage.StorageError:
         return False
     title, description = _extract_title_description(content)
-    entry = docindex.DocumentEntry(file=rel, title=title, description=description)
+    req_ctx = project_context.get_request_context()
+    proj_id = req_ctx.project_id if req_ctx else None
+    proj_name = req_ctx.project_name if req_ctx else None
+    conv_id = req_ctx.conversation_id if req_ctx else None
+
+    entry = docindex.DocumentEntry(
+        file=rel,
+        title=title,
+        description=description,
+        project_id=proj_id,
+        project_name=proj_name,
+        conversation_id=conv_id,
+    )
     try:
         docindex.new_docindex(cfg, user_id).upsert(entry)
         return True
@@ -863,5 +978,33 @@ async def get_project_context(
         conv_status=conv_status,
         request_id=request_id,
     )
-    return _ok(res.as_dict(conversation_id))
+    res_dict = res.as_dict(conversation_id)
+    if res.status == "project" and res.project_id:
+        idx = docindex.new_docindex(app_ctx.storage_cfg, user_id)
+        proj_docs = idx.list_documents(project_id=res.project_id)
+        res_dict["project"]["documents_count"] = len(proj_docs)
+        doc_list = []
+        summary_file = None
+        for d in proj_docs:
+            doc_list.append(
+                {
+                    "file": d.file,
+                    "title": d.title,
+                    "description": d.description,
+                    "tags": d.tags,
+                    "rag_indexed": d.rag_indexed,
+                    "public": d.public,
+                }
+            )
+            if not summary_file and (
+                d.file.endswith(("resumo.md", "summary.md"))
+                or "resumo" in [t.lower() for t in d.tags]
+                or "summary" in [t.lower() for t in d.tags]
+            ):
+                summary_file = d.file
+        res_dict["project"]["documents"] = doc_list
+        if summary_file:
+            res_dict["project"]["summary_file"] = summary_file
+
+    return _ok(res_dict)
 

@@ -202,13 +202,14 @@ strategy).
 
 ### Documentation
 
-- `save_documentation(filename, content, title?, description?, tags?, topics?)` — saves to `docs/`, updates index, **does not** publish or index
-- `update_documentation(filename, content, ...)` — update existing doc
-- `get_document_metadata(filename)` — full index entry
+- `save_documentation(filename, content, title?, description?, tags?, topics?, project_id?, project_name?)` — saves to `docs/`, updates index, automatically associates with active project if running in a project conversation.
+- `update_documentation(filename, content, title?, description?, tags?, topics?, project_id?, project_name?)` — update existing doc, preserves/refreshes project association.
+- `get_document_metadata(filename)` — full index entry.
+- `list_documentation(project_id?, tag?)` — list registered documentation catalog entries with optional project and tag filtering.
 
 ### RAG
 
-- `search_knowledge(query, limit=8)` — semantic search (owner-scoped via JWT)
+- `search_knowledge(query, limit=8, project_id?, scope="auto")` — semantic search with project scoping (`auto`, `project`, `personal`, `all`). Strict isolation: in a project conversation, candidate documents are strictly restricted to the active project's indexed files with zero cross-project leakage.
 - `index_document(path)` — embed + canary verify, updates index status
 - `remove_from_knowledge(path)` — delete from rag_api, clears index
 - `get_index_status()` — counts + rag_api health
@@ -220,9 +221,9 @@ strategy).
 - `get_public_link(path)` — active link for path
 - `list_public_links()` — all links for user
 
-### Project Context
+### Project Context & Memory
 
-- `get_project_context()` — resolves the active LibreChat project for the current conversation via read-only MongoDB query (`conversations` -> `chatprojects`). Returns structured JSON with status (`project`, `no_project`, `conversation_unavailable`, `context_missing`, etc.).
+- `get_project_context()` — resolves the active LibreChat project for the current conversation via read-only MongoDB query (`conversations` -> `chatprojects`). Returns structured JSON with status (`project`, `no_project`, `conversation_unavailable`, `context_missing`, etc.), project documents catalog, and `summary_file` if present.
 
 ## Security Model
 

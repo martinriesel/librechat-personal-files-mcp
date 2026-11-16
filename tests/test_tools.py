@@ -266,3 +266,244 @@ def test_read_binary_missing_file(cfg):
     out = tools.read_binary_file(cfg, USER, "office/nope.docx")
     body = json.loads(out[len("ERROR: "):])
     assert body["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Project & Memory Index Tests (Fase 4 & 5)
+# ---------------------------------------------------------------------------
+
+
+def test_move_file_updates_docindex(cfg):
+    from personal_files_mcp import docindex
+
+    tools.write_file(cfg, USER, "old_name.md", "# Old\nsome text")
+    idx = docindex.new_docindex(cfg, USER)
+    assert idx.get("old_name.md") is not None
+
+    out = tools.move_file(cfg, USER, "old_name.md", "new_name.md")
+    _ok_payload(out)
+
+    assert idx.get("old_name.md") is None
+    assert idx.get("new_name.md") is not None
+    assert idx.get("new_name.md").title == "Old"
+
+
+def test_delete_file_cleans_docindex(cfg):
+    from personal_files_mcp import docindex
+
+    tools.write_file(cfg, USER, "del_doc.md", "# To Delete\ncontent")
+    idx = docindex.new_docindex(cfg, USER)
+    assert idx.get("del_doc.md") is not None
+
+    out = tools.delete_file(cfg, USER, "del_doc.md")
+    _ok_payload(out)
+    assert idx.get("del_doc.md") is None
+
+
+def test_save_documentation_with_project(cfg):
+    from personal_files_mcp import docindex
+
+    out = tools.save_documentation(
+        cfg,
+        USER,
+        "spec.md",
+        "# Project Spec\nContent",
+        title="Spec",
+        project_id="proj_alpha",
+        project_name="Alpha",
+        conversation_id="conv_1",
+    )
+    payload = _ok_payload(out)
+    assert payload["project_id"] == "proj_alpha"
+    assert payload["project_name"] == "Alpha"
+
+    entry = docindex.new_docindex(cfg, USER).get("docs/spec.md")
+    assert entry is not None
+    assert entry.project_id == "proj_alpha"
+    assert entry.project_name == "Alpha"
+    assert entry.conversation_id == "conv_1"
+
+
+def test_update_documentation_preserves_project(cfg):
+    from personal_files_mcp import docindex
+
+    tools.save_documentation(
+        cfg,
+        USER,
+        "spec.md",
+        "# Spec\nOriginal",
+        project_id="proj_alpha",
+        project_name="Alpha",
+    )
+    out = tools.update_documentation(
+        cfg,
+        USER,
+        "spec.md",
+        "# Spec\nUpdated",
+    )
+    payload = _ok_payload(out)
+    assert payload["project_id"] == "proj_alpha"
+    assert payload["project_name"] == "Alpha"
+
+    entry = docindex.new_docindex(cfg, USER).get("docs/spec.md")
+    assert entry is not None
+    assert entry.project_id == "proj_alpha"
+
+
+def test_list_documentation(cfg):
+    tools.save_documentation(
+        cfg,
+        USER,
+        "doc1.md",
+        "# Doc 1",
+        project_id="proj_1",
+        tags=["sql", "db"],
+    )
+    tools.save_documentation(
+        cfg,
+        USER,
+        "doc2.md",
+        "# Doc 2",
+        project_id="proj_2",
+        tags=["api"],
+    )
+
+    # Filter by project
+    out1 = tools.list_documentation(cfg, USER, project_id="proj_1")
+    p1 = _ok_payload(out1)
+    assert p1["count"] == 1
+    assert p1["documents"][0]["file"] == "docs/doc1.md"
+
+    # Filter by tag
+    out_tag = tools.list_documentation(cfg, USER, tag="sql")
+    p_tag = _ok_payload(out_tag)
+    assert p_tag["count"] == 1
+    assert p_tag["documents"][0]["file"] == "docs/doc1.md"
+
+
+def test_search_knowledge_project_scoping(cfg, monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from personal_files_mcp import docindex
+    from personal_files_mcp.config import AppSettings
+
+    mock_settings = MagicMock(spec=AppSettings)
+    mock_settings.jwt_secret_usable.return_value = True
+
+    mock_ctx = MagicMock()
+    mock_ctx.settings = mock_settings
+    tools.bind_publish_ctx(mock_ctx)
+
+    idx = docindex.new_docindex(cfg, USER)
+    # Doc in proj_1
+    idx.upsert(
+        docindex.DocumentEntry(
+            file="p1.md",
+            project_id="proj_1",
+            indexing_status="indexed",
+            rag_file_id="rag-proj1",
+        )
+    )
+    # Doc in proj_2
+    idx.upsert(
+        docindex.DocumentEntry(
+            file="p2.md",
+            project_id="proj_2",
+            indexing_status="indexed",
+            rag_file_id="rag-proj2",
+        )
+    )
+
+    # 1. Searching for proj_3 (which has no docs) returns early with 0 results
+    out_empty = tools.search_knowledge(cfg, USER, "hello", project_id="proj_3")
+    p_empty = _ok_payload(out_empty)
+    assert p_empty["count"] == 0
+    assert p_empty["scope"] == "project"
+    assert "no indexed documents for project 'proj_3'" in p_empty["note"]
+
+    # 2. Mock _run_rag and verify that searching proj_1 only passes rag-proj1
+    captured_file_ids = []
+
+    def mock_run_rag(ctx, coro_factory):
+        mock_client = MagicMock()
+
+        async def fake_query_multiple(uid, q, fids, lim):
+            captured_file_ids.extend(fids)
+            return [{"text": "match"}]
+
+        mock_client.query_multiple = AsyncMock(side_effect=fake_query_multiple)
+
+        import asyncio
+
+        async def run_coro():
+            return await coro_factory(mock_client)
+
+        return asyncio.run(run_coro())
+
+    monkeypatch.setattr(tools, "_run_rag", mock_run_rag)
+
+    out_p1 = tools.search_knowledge(cfg, USER, "query text", project_id="proj_1")
+    p_p1 = _ok_payload(out_p1)
+    assert p_p1["count"] == 1
+    assert p_p1["scope"] == "project"
+    assert p_p1["project_id"] == "proj_1"
+    assert captured_file_ids == ["rag-proj1"]
+
+
+def test_get_project_context_includes_documents(cfg):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from personal_files_mcp import docindex
+    from personal_files_mcp.project_resolver import ProjectResolutionResult
+
+    # Add a document and a summary document to the project
+    idx = docindex.new_docindex(cfg, USER)
+    idx.upsert(
+        docindex.DocumentEntry(
+            file="docs/architecture.md",
+            title="Arch",
+            project_id="proj_123",
+            tags=["backend"],
+        )
+    )
+    idx.upsert(
+        docindex.DocumentEntry(
+            file="docs/resumo.md",
+            title="Project Summary",
+            project_id="proj_123",
+            tags=["resumo"],
+        )
+    )
+
+    mock_app_ctx = MagicMock()
+    mock_app_ctx.storage_cfg = cfg
+    mock_app_ctx.settings = MagicMock()
+
+    mock_resolver = MagicMock()
+    mock_resolver.resolve = AsyncMock(
+        return_value=ProjectResolutionResult(
+            status="project",
+            project_id="proj_123",
+            project_name="Test Project",
+            project_description="Desc",
+        )
+    )
+    mock_app_ctx.project_resolver = mock_resolver
+
+    out = asyncio.run(
+        tools.get_project_context(
+            mock_app_ctx,
+            user_id=USER,
+            conversation_id="conv-1",
+        )
+    )
+    payload = _ok_payload(out)
+    assert payload["status"] == "project"
+    project_data = payload["project"]
+    assert project_data["id"] == "proj_123"
+    assert project_data["name"] == "Test Project"
+    assert project_data["documents_count"] == 2
+    assert len(project_data["documents"]) == 2
+    assert project_data["summary_file"] == "docs/resumo.md"
+

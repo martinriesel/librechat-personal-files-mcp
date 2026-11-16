@@ -26,6 +26,8 @@ class RequestContextData:
     user_id: str
     conversation_id: str | None = None
     request_id: str = ""
+    project_id: str | None = None
+    project_name: str | None = None
 
 
 _current_request_context: ContextVar[RequestContextData | None] = ContextVar(
