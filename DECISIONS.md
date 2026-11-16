@@ -102,3 +102,23 @@ way they are.
 ## D023 — Canary: also strip blockquote/list markers and skip horizontal rules
 **Decision:** Extend `_strip_markdown` to also remove `>` blockquote markers, `-`/`*`/`+` list bullets, and `1.` ordered-list markers; `_clean_for_canary` skips horizontal rules (`---`, `***`, `___`).
 **Reason:** Same class of failure as D022, but for documents starting with a blockquote or list. The rag_api loader strips `>`/bullets, but the canary kept them, so the substring match failed (e.g. `> MCP server ...` vs `MCP server ...`), causing a false `rag_canary_failed` and chunk deletion.
+
+## D024 — OneDrive is an explicit optional provider
+**Decision:** Keep local storage as the default and register OneDrive tools only when `STORAGE_PROVIDERS` contains `onedrive` and all required Azure settings validate.
+**Reason:** Existing deployments must preserve their tool catalog and require a deliberate operational opt-in before exposing cloud tools.
+
+## D025 — OneDrive token encryption uses a dedicated Fernet key
+**Decision:** Encrypt per-user Microsoft token material with `ONEDRIVE_TOKEN_ENCRYPTION_KEY`, distinct from `JWT_SECRET`, and store it inside each user's private storage root.
+**Reason:** Token encryption must not reuse the RAG/LibreChat JWT signing secret; per-user files preserve existing isolation boundaries.
+
+## D026 — OneDrive OAuth callbacks use single-use transactions
+**Decision:** Bind signed OAuth state to PKCE verifier and user identity in short-lived SQLite transactions under `/data/private/_system`; atomically consume a transaction before exchanging its code.
+**Reason:** The MCP is stateless and the browser callback cannot rely on LibreChat headers, while a signed JWT alone does not prevent callback replay.
+
+## D027 — OneDrive document index and RAG IDs
+**Decision:** Treat AppFolder `memory-index.json` as authoritative for OneDrive documents and persist an independent rag_api UUID per indexed item; use eTag/If-Match updates.
+**Reason:** rag_api's existing multipart embed interface does not accept arbitrary provider metadata, and independent IDs prevent same-name local/cloud files from sharing index state.
+
+## D028 — OneDrive viewer requires identity plus one-time token
+**Decision:** HTML viewer tokens are short-lived, single-use, user/item-bound credentials that must be presented with the matching trusted `X-User-Id`; organization sharing is separate.
+**Reason:** A bearer URL by itself would be public access, contradicting the authenticated viewer requirement.

@@ -48,6 +48,52 @@ def test_healthz_bypasses_identity(client: TestClient, ctx):
     assert "storage" in body
 
 
+def test_provider_configuration_requires_onedrive_settings():
+    with pytest.raises(ValueError, match="AZURE_TENANT_ID"):
+        _settings_with_providers("onedrive")
+
+
+def test_middleware_requires_identity_for_viewer_route(client: TestClient):
+    response = client.get("/onedrive/view/opaque-token")
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "missing_user_identity"
+
+
+def test_callback_route_is_registered_only_when_onedrive_enabled(tmp_path):
+    from cryptography.fernet import Fernet
+
+    settings = AppSettings(
+        storage_root=str(tmp_path),
+        registry_db=str(tmp_path / "_system" / "links.db"),
+        jwt_secret="j" * 40,
+        storage_providers=frozenset({"local", "onedrive"}),
+        azure_tenant_id="tenant-guid",
+        azure_client_id="client-guid",
+        azure_client_secret="client-secret",
+        azure_scopes=("Files.ReadWrite.AppFolder", "User.Read", "offline_access"),
+        azure_redirect_uri="https://chat.example.test/auth/azure/callback",
+        onedrive_token_encryption_key=Fernet.generate_key().decode("ascii"),
+        onedrive_viewer_base_url="https://chat.example.test/onedrive/view",
+    )
+    app = create_app(
+        AppContext(
+            settings,
+            storage.StorageConfig(storage_root=Path(settings.storage_root)),
+        )
+    )
+    with TestClient(app) as test_client:
+        response = test_client.get("/auth/azure/callback")
+
+    assert response.status_code == 400
+
+
+def _settings_with_providers(providers: str):
+    settings = AppSettings(storage_providers=frozenset(providers.split(",")))
+    settings.validate_onedrive_config()
+    return settings
+
+
 def test_healthz_degraded_without_secret(tmp_path: Path):
     bad = AppSettings(
         storage_root=str(tmp_path / "private"),
@@ -80,6 +126,18 @@ def test_mcp_route_rejects_invalid_identity(client: TestClient):
     resp = client.get("/mcp", headers={"X-User-Id": "bad"})
     assert resp.status_code == 403
     assert resp.json()["error"] == "invalid_user_identity"
+
+
+def test_onedrive_routes_are_not_registered_when_provider_disabled(client: TestClient):
+    response = client.get("/auth/azure/callback")
+
+    assert response.status_code == 404
+
+
+def test_onedrive_callback_rejects_missing_code_or_state(client: TestClient):
+    response = client.get("/auth/azure/callback")
+
+    assert response.status_code == 404
 
 
 def test_files_route_bypasses_identity(client: TestClient):

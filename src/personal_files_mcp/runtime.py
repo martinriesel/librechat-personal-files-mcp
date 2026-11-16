@@ -16,3 +16,6 @@ from .config import AppSettings
 class AppContext:
     settings: AppSettings
     storage_cfg: storage.StorageConfig
+    onedrive_auth: object | None = None
+    onedrive_storage: object | None = None
+    onedrive_publishing: object | None = None

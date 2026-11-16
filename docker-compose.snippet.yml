@@ -26,6 +26,9 @@ services:
     user: "2000:2500"
     environment:
       USER_HEADER: X-User-Id
+      # Local provider remains the default. Add `onedrive` only after completing
+      # docs/onedrive-configuration.md and populating the required secrets.
+      STORAGE_PROVIDERS: ${STORAGE_PROVIDERS:-local}
       STORAGE_ROOT: /data/private
       SHARE_ROOT: /data/share
       RAG_API_URL: http://rag_api:8000
@@ -34,6 +37,14 @@ services:
       MAX_FILE_SIZE_MB: "20"
       REGISTRY_DB: /data/private/_system/links.db
       UMASK: "002"
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
+      AZURE_SCOPES: ${AZURE_SCOPES:-Files.ReadWrite.AppFolder User.Read offline_access}
+      AZURE_REDIRECT_URI: ${AZURE_REDIRECT_URI:-}
+      ONEDRIVE_TOKEN_ENCRYPTION_KEY: ${ONEDRIVE_TOKEN_ENCRYPTION_KEY:-}
+      ONEDRIVE_MAX_FILE_SIZE_MB: ${ONEDRIVE_MAX_FILE_SIZE_MB:-100}
+      ONEDRIVE_VIEWER_BASE_URL: ${ONEDRIVE_VIEWER_BASE_URL:-}
     volumes:
       - ./data/private:/data/private
       - ./data/share:/data/share

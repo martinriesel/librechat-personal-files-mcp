@@ -23,7 +23,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastmcp import Context, FastMCP
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from . import identity, publishing, storage, tools
 from .config import AppSettings
@@ -39,7 +39,10 @@ def build_context() -> AppContext:
         max_file_bytes=settings.max_file_size_mb * 1024 * 1024,
         max_binary_bytes=settings.max_binary_file_mb * 1024 * 1024,
     )
-    return AppContext(settings=settings, storage_cfg=storage_cfg)
+    ctx = AppContext(settings=settings, storage_cfg=storage_cfg)
+    if settings.onedrive_enabled:
+        _build_onedrive_services(ctx)
+    return ctx
 
 
 def create_app(context: AppContext | None = None) -> FastAPI:
@@ -61,8 +64,14 @@ def create_app(context: AppContext | None = None) -> FastAPI:
         tools.bind_publish_ctx(ctx)
         # Initialize publishing registry eagerly so SQLite is ready.
         publishing.get_registry(ctx)
+        if ctx.settings.onedrive_enabled and ctx.onedrive_publishing is None:
+            _build_onedrive_services(ctx)
         # Attach AppContext to the FastMCP instance for tool access.
         mcp._app_context = ctx
+        if ctx.settings.onedrive_enabled:
+            from .onedrive_tools import register_onedrive_tools
+
+            register_onedrive_tools(mcp)
         app.state.app_context = ctx
         # Run the MCP sub-app lifespan (required for StreamableHTTPSessionManager).
         async with mcp_app.lifespan(app):
@@ -81,6 +90,9 @@ def create_app(context: AppContext | None = None) -> FastAPI:
     register_health(app)
     register_public_endpoint(app)
     register_binary_endpoint(app)
+    if ctx.settings.onedrive_enabled:
+        register_onedrive_auth_routes(app)
+        register_onedrive_view_route(app)
     app.mount("/", mcp_app)
 
     return app
@@ -105,7 +117,11 @@ class IdentityMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path == "/healthz" or path.startswith("/files"):
+        if (
+            path == "/healthz"
+            or path.startswith("/files")
+            or path == "/auth/azure/callback"
+        ):
             return await call_next(request)
         try:
             user_id = identity.extract_user_id(request.headers, self._config)
@@ -264,6 +280,117 @@ def _service_token_matches(request: Request, expected: str) -> bool:
     return secrets.compare_digest(supplied, expected)
 
 
+def _build_onedrive_services(ctx: AppContext) -> None:
+    from .onedrive_auth import OneDriveAuth
+    from .onedrive_client import GraphClient
+    from .onedrive_publishing import OneDrivePublishing
+    from .onedrive_storage import OneDriveStorage
+
+    settings = ctx.settings
+    Path(settings.storage_root, "_system").mkdir(parents=True, exist_ok=True)
+    transaction_db = (
+        Path(settings.onedrive_oauth_db)
+        if settings.onedrive_oauth_db
+        else Path(settings.storage_root) / "_system" / "onedrive-oauth.db"
+    )
+    auth = OneDriveAuth(
+        settings,
+        transaction_db,
+    )
+    graph = GraphClient(auth, "")
+    ctx.onedrive_auth = auth
+    ctx.onedrive_storage = OneDriveStorage(
+        graph, settings.onedrive_max_file_size_mb * 1024 * 1024
+    )
+    ctx.onedrive_publishing = OneDrivePublishing(
+        Path(settings.onedrive_publishing_db)
+        if settings.onedrive_publishing_db
+        else Path(settings.storage_root) / "_system" / "onedrive-publishing.db",
+        graph,
+    )
+
+
+def register_onedrive_auth_routes(app: FastAPI) -> None:
+    """Register browser OAuth endpoints; callback identity comes from one-use state."""
+
+    @app.get("/auth/azure/login")
+    async def _azure_login(request: Request, state: str):
+        ctx: AppContext = app.state.app_context
+        try:
+            user_id = _get_request_user_id(request, ctx.settings.user_header)
+            started = ctx.onedrive_auth.authorization_for_state(user_id, state)
+        except identity.IdentityError as exc:
+            return JSONResponse(status_code=403, content={"error": exc.code})
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "invalid_oauth_state"})
+        return RedirectResponse(started.url, status_code=302)
+
+    @app.get("/auth/azure/callback")
+    async def _azure_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+        ctx: AppContext = app.state.app_context
+        if error or not code or not state:
+            return HTMLResponse("<p>OneDrive authorization was not completed.</p>", status_code=400)
+        try:
+            ctx.onedrive_auth.handle_callback(code, state)
+        except (ValueError, PermissionError) as exc:
+            return HTMLResponse(f"<p>{_html_text(exc)}</p>", status_code=400)
+        return HTMLResponse(
+            "<p>OneDrive connected. Return to LibreChat.</p>",
+            headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"},
+        )
+
+
+def register_onedrive_view_route(app: FastAPI) -> None:
+    @app.get("/onedrive/view/{token}")
+    async def _view_onedrive_file(token: str, request: Request):
+        ctx: AppContext = app.state.app_context
+        try:
+            user_id = _get_request_user_id(request, ctx.settings.user_header)
+            viewer = ctx.onedrive_publishing.viewer_item(token, user_id)
+        except identity.IdentityError:
+            return JSONResponse(status_code=403, content={"error": "missing_user_identity"})
+        except Exception:
+            return JSONResponse(status_code=404, content={"error": "viewer_not_found_or_expired"})
+        async def body_stream():
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+
+            def fetch():
+                return ctx.onedrive_storage.client.download(
+                    f"/me/drive/items/{viewer['item_id']}/content",
+                    max_bytes=5 * 1024 * 1024,
+                    user_id=user_id,
+                )
+
+            loop = asyncio.get_running_loop()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                yield await loop.run_in_executor(executor, fetch)
+
+        return StreamingResponse(
+            body_stream(),
+            media_type=viewer["mime_type"],
+            headers={
+                "Content-Disposition": "inline",
+                "X-Frame-Options": "SAMEORIGIN",
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, no-store",
+                "Content-Security-Policy": "default-src 'self' data: https:; object-src 'none'; frame-ancestors 'self'",
+            },
+        )
+
+
+def _get_request_user_id(request: Request, header_name: str) -> str:
+    return identity.extract_user_id(request.headers, identity.IdentityConfig(header_name))
+
+
+def _html_text(error: Exception) -> str:
+    from html import escape
+
+    return escape(str(error))
+
+
+
+
 # ---------------------------------------------------------------------------
 # MCP server
 # ---------------------------------------------------------------------------
@@ -277,9 +404,11 @@ def _get_app_ctx(ctx: Context) -> AppContext:
 def _get_user_id(ctx: Context) -> str:
     """Extract and validate user_id from request headers in the FastMCP context."""
     request = ctx.request_context.request
-    raw = request.headers.get("X-User-Id", "").strip()
     try:
-        return identity.validate_user_id(raw)
+        return identity.extract_user_id(
+            request.headers,
+            identity.IdentityConfig(ctx.fastmcp._app_context.settings.user_header),
+        )
     except identity.IdentityError as exc:
         raise identity.IdentityError(exc.code) from None
 

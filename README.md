@@ -219,6 +219,12 @@ strategy).
 - `get_public_link(path)` — active link for path
 - `list_public_links()` — all links for user
 
+### OneDrive (opt-in)
+
+OneDrive tools are available only when `STORAGE_PROVIDERS` includes `onedrive` and the Entra settings are configured. The default is `local`, preserving the current catalog. OneDrive access is confined to its Graph AppFolder (`approot`), and tokens are encrypted per user with a dedicated Fernet key.
+
+See [`docs/onedrive-configuration.md`](docs/onedrive-configuration.md) for Entra app registration, required Compose variables, Nginx routes, rollout, and validation steps.
+
 ## Security Model
 
 - **Identity**: `X-User-Id` header injected by LibreChat (`{{LIBRECHAT_USER_ID}}`). Placeholder unresolved → empty string → **fail-closed**.
