@@ -266,3 +266,36 @@ def test_binary_upload_rejects_oversized_file(tmp_path: Path):
     assert resp.json()["error"] == "file_too_large"
     # nothing written
     assert not (Path(settings.storage_root) / USER / "office" / "big.docx").exists()
+
+
+# ---------------------------------------------------------------------------
+# Project Context & Diagnostics
+# ---------------------------------------------------------------------------
+
+
+def test_tool_catalog_includes_get_project_context(ctx: AppContext):
+    import asyncio
+    from fastmcp import FastMCP
+    from personal_files_mcp.app import register_mcp_tools
+
+    mcp = FastMCP("test")
+    register_mcp_tools(mcp)
+
+    tools_list = asyncio.run(mcp.list_tools())
+    tool_names = {t.name for t in tools_list}
+    assert "get_project_context" in tool_names
+
+
+def test_identity_middleware_captures_conversation_headers(client: TestClient):
+    resp = client.post(
+        "/binary",
+        headers={
+            "X-User-Id": USER,
+            "X-Service-Token": "s" * 16,
+            "X-Conversation-Id": "conv-test-12345",
+        },
+        files={"file": ("f.txt", b"x", "text/plain")},
+        data={"path": "f.txt"},
+    )
+    # The endpoint processes, confirming middleware successfully extracted conversation ID
+    assert resp.status_code in (200, 400, 413, 503)

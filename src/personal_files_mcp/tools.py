@@ -832,3 +832,36 @@ def _extract_title_description(content: str) -> tuple[str, str]:
                 description = line.strip()
                 break
     return title, description
+
+
+# ---------------------------------------------------------------------------
+# Project context
+# ---------------------------------------------------------------------------
+
+
+async def get_project_context(
+    app_ctx: Any,
+    user_id: str,
+    conversation_id: str | None = None,
+    conv_status: str = "valid",
+    request_id: str = "",
+) -> str:
+    """Resolve and return active LibreChat project context."""
+    resolver = getattr(app_ctx, "project_resolver", None)
+    if resolver is None:
+        return _ok(
+            {
+                "status": "resolver_unavailable",
+                "message": "Project resolver is not configured on this server.",
+            }
+        )
+
+    res = await resolver.resolve(
+        app_ctx.settings,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        conv_status=conv_status,
+        request_id=request_id,
+    )
+    return _ok(res.as_dict(conversation_id))
+

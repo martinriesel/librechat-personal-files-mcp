@@ -135,6 +135,8 @@ mcpServers:
     headers:
       X-User-ID: '{{LIBRECHAT_USER_ID}}'
       X-User-Email: '{{LIBRECHAT_USER_EMAIL}}'
+    requestHeaders:
+      X-Conversation-Id: '{{LIBRECHAT_BODY_CONVERSATIONID}}'
 ```
 
 Restart LibreChat. The `personal-files` server will be available to your agents.
@@ -175,6 +177,12 @@ strategy).
 | `MAX_BINARY_FILE_MB` | `50` | Max upload size for binary files (`/binary`, `write_binary_file`) |
 | `SERVICE_TOKEN` | *(empty)* | Shared token required by the `POST /binary` endpoint; without it the endpoint returns 503 |
 | `REGISTRY_DB` | `/data/private/_system/links.db` | SQLite registry for public links |
+| `CONVERSATION_HEADER` | `X-Conversation-Id` | Header carrying the conversation identity |
+| `LIBRECHAT_MONGO_URI` | *(empty)* | Read-only MongoDB connection URI for project resolution |
+| `LIBRECHAT_MONGO_DB` | `LibreChat` | MongoDB database name |
+| `LIBRECHAT_MONGO_TIMEOUT_MS` | `2000` | Timeout in ms for project resolution queries |
+| `PERSONAL_FILES_LOG_LEVEL` | `INFO` | Application log level (`OFF`, `ERROR`, `WARNING`, `INFO`, `DEBUG`) |
+| `PERSONAL_FILES_CONTEXT_DIAGNOSTICS` | `false` | Enable single-line JSON context diagnostic logging |
 
 ## MCP Tools
 
@@ -211,6 +219,10 @@ strategy).
 - `unpublish_file(path_or_token)` — revoke link (file stays private)
 - `get_public_link(path)` — active link for path
 - `list_public_links()` — all links for user
+
+### Project Context
+
+- `get_project_context()` — resolves the active LibreChat project for the current conversation via read-only MongoDB query (`conversations` -> `chatprojects`). Returns structured JSON with status (`project`, `no_project`, `conversation_unavailable`, `context_missing`, etc.).
 
 ## Security Model
 

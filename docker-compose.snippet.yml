@@ -26,6 +26,12 @@ services:
       MAX_FILE_SIZE_MB: "20"
       REGISTRY_DB: /data/private/_system/links.db
       UMASK: "002"
+      # Project Context & Diagnostics (Fase 3)
+      CONVERSATION_HEADER: X-Conversation-Id
+      LIBRECHAT_MONGO_URI: ${LIBRECHAT_MONGO_URI:-}
+      LIBRECHAT_MONGO_DB: ${LIBRECHAT_MONGO_DB:-LibreChat}
+      PERSONAL_FILES_LOG_LEVEL: ${PERSONAL_FILES_LOG_LEVEL:-INFO}
+      PERSONAL_FILES_CONTEXT_DIAGNOSTICS: ${PERSONAL_FILES_CONTEXT_DIAGNOSTICS:-false}
     volumes:
       - ./data/private:/data/private
       - ./data/share:/data/share

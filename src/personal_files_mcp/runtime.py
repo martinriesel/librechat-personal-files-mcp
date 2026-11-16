@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from typing import Any
+
 from . import storage
 from .config import AppSettings
 
@@ -16,3 +18,4 @@ from .config import AppSettings
 class AppContext:
     settings: AppSettings
     storage_cfg: storage.StorageConfig
+    project_resolver: Any | None = None

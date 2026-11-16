@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from . import identity, publishing, storage, tools
+from . import diagnostics, identity, project_context, project_resolver, publishing, storage, tools
 from .config import AppSettings
 from .runtime import AppContext
 
@@ -34,12 +35,34 @@ logger = logging.getLogger(__name__)
 
 def build_context() -> AppContext:
     settings = AppSettings.from_env()
+    diagnostics.configure_logging(settings)
     storage_cfg = storage.StorageConfig(
         storage_root=Path(settings.storage_root),
         max_file_bytes=settings.max_file_size_mb * 1024 * 1024,
         max_binary_bytes=settings.max_binary_file_mb * 1024 * 1024,
     )
-    return AppContext(settings=settings, storage_cfg=storage_cfg)
+    mongo_client = None
+    if settings.librechat_mongo_uri:
+        try:
+            from motor.motor_asyncio import AsyncIOMotorClient
+
+            mongo_client = AsyncIOMotorClient(
+                settings.librechat_mongo_uri,
+                serverSelectionTimeoutMS=settings.librechat_mongo_timeout_ms,
+            )
+        except Exception as exc:
+            logger.warning("failed to initialize mongo client: %s", exc)
+
+    resolver = project_resolver.ProjectResolver(
+        mongo_client=mongo_client,
+        db_name=settings.librechat_mongo_db,
+        timeout_ms=settings.librechat_mongo_timeout_ms,
+    )
+    return AppContext(
+        settings=settings,
+        storage_cfg=storage_cfg,
+        project_resolver=resolver,
+    )
 
 
 def create_app(context: AppContext | None = None) -> FastAPI:
@@ -67,6 +90,12 @@ def create_app(context: AppContext | None = None) -> FastAPI:
         # Run the MCP sub-app lifespan (required for StreamableHTTPSessionManager).
         async with mcp_app.lifespan(app):
             yield
+        # Graceful shutdown of project resolver resources
+        if ctx.project_resolver and getattr(ctx.project_resolver, "_client", None):
+            try:
+                ctx.project_resolver._client.close()
+            except Exception:
+                pass
 
     app = FastAPI(
         title="librechat-personal-files-mcp",
@@ -74,7 +103,11 @@ def create_app(context: AppContext | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.app_context = ctx
-    app.add_middleware(IdentityMiddleware, header_name=ctx.settings.user_header)
+    app.add_middleware(
+        IdentityMiddleware,
+        header_name=ctx.settings.user_header,
+        conversation_header=ctx.settings.conversation_header,
+    )
 
     # Register user-facing routes BEFORE the catch-all MCP mount so they take
     # precedence.
@@ -99,9 +132,15 @@ class IdentityMiddleware(BaseHTTPMiddleware):
     authorization (public file download).
     """
 
-    def __init__(self, app, header_name: str = "X-User-Id") -> None:
+    def __init__(
+        self,
+        app,
+        header_name: str = "X-User-Id",
+        conversation_header: str = "X-Conversation-Id",
+    ) -> None:
         super().__init__(app)
         self._config = identity.IdentityConfig(header_name=header_name)
+        self._conversation_header = conversation_header
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -115,7 +154,59 @@ class IdentityMiddleware(BaseHTTPMiddleware):
                 content={"error": exc.code},
             )
         request.state.user_id = user_id
-        return await call_next(request)
+
+        # Extract and validate conversation ID
+        request_id = secrets.token_hex(8)
+        request.state.request_id = request_id
+
+        conv_id, conv_status = project_context.extract_conversation_id(
+            request.headers, self._conversation_header
+        )
+        request.state.conversation_id = conv_id
+        request.state.conversation_status = conv_status
+
+        app_ctx = getattr(request.app.state, "app_context", None)
+        if app_ctx:
+            if conv_status == "valid":
+                diagnostics.log_context_event(
+                    app_ctx.settings,
+                    "context.received",
+                    request_id=request_id,
+                    identity_present=True,
+                    conversation_header_present=True,
+                    conversation_id_valid=True,
+                    conversation_id=conv_id,
+                )
+            elif conv_status in ("placeholder", "invalid"):
+                diagnostics.log_context_event(
+                    app_ctx.settings,
+                    "context.invalid",
+                    request_id=request_id,
+                    identity_present=True,
+                    conversation_header_present=True,
+                    conversation_id_valid=False,
+                    error_code=conv_status,
+                )
+            elif conv_status == "missing":
+                diagnostics.log_context_event(
+                    app_ctx.settings,
+                    "context.discovery_without_conversation",
+                    request_id=request_id,
+                    identity_present=True,
+                    conversation_header_present=False,
+                )
+
+        token = project_context.set_request_context(
+            project_context.RequestContextData(
+                user_id=user_id,
+                conversation_id=conv_id,
+                request_id=request_id,
+            )
+        )
+        try:
+            return await call_next(request)
+        finally:
+            project_context.reset_request_context(token)
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +650,38 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
         return tools.get_index_status(app_ctx.storage_cfg, uid)
+
+    # --- Project context ---
+
+    @mcp.tool()
+    async def get_project_context(ctx: Context) -> str:
+        """Resolve and return active LibreChat project context for the current conversation.
+
+        Identifies the project associated with the current conversation.
+        Returns a structured JSON response with status ('project', 'no_project',
+        'conversation_unavailable', 'context_missing', etc.).
+        """
+        app_ctx = _get_app_ctx(ctx)
+        uid = _get_user_id(ctx)
+
+        request = ctx.request_context.request
+        req_ctx = project_context.get_request_context()
+
+        conv_id = getattr(request.state, "conversation_id", None)
+        conv_status = getattr(request.state, "conversation_status", "valid")
+        request_id = getattr(request.state, "request_id", "")
+
+        if req_ctx:
+            conv_id = conv_id or req_ctx.conversation_id
+            request_id = request_id or req_ctx.request_id
+
+        return await tools.get_project_context(
+            app_ctx,
+            user_id=uid,
+            conversation_id=conv_id,
+            conv_status=conv_status,
+            request_id=request_id,
+        )
 
 
 # ---------------------------------------------------------------------------
