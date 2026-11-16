@@ -9,14 +9,6 @@
 
 services:
   # ------------------------------------------------------------
-  # Nginx additional volume (read-only) for X-Accel-Redirect
-  # ------------------------------------------------------------
-  nginx:
-    volumes:
-      # keep your existing nginx volumes and add this line:
-      - ./data/private:/data/private:ro
-
-  # ------------------------------------------------------------
   # Personal Files MCP server
   # ------------------------------------------------------------
   librechat-personal-files:

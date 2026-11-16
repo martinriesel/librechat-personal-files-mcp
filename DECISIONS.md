@@ -102,3 +102,7 @@ way they are.
 ## D023 — Canary: also strip blockquote/list markers and skip horizontal rules
 **Decision:** Extend `_strip_markdown` to also remove `>` blockquote markers, `-`/`*`/`+` list bullets, and `1.` ordered-list markers; `_clean_for_canary` skips horizontal rules (`---`, `***`, `___`).
 **Reason:** Same class of failure as D022, but for documents starting with a blockquote or list. The rag_api loader strips `>`/bullets, but the canary kept them, so the substring match failed (e.g. `> MCP server ...` vs `MCP server ...`), causing a false `rag_canary_failed` and chunk deletion.
+
+## D024 — Direct file delivery via Starlette FileResponse without Nginx
+**Decision:** `publishing._serve` delivers files directly using `FileResponse` with `path=abs_path`, `content_disposition_type="attachment"`, `headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"}`, and `method=request.method`. Eliminate the `X-Accel-Redirect` header and the dependency on Nginx's `/_protected/` alias.
+**Reason:** On Dokploy and modern proxy setups using Traefik, `X-Accel-Redirect` is not handled, causing empty 200 responses. `FileResponse` streams files in chunks via ASGI without buffering entire payloads in memory, supports HTTP Range requests (206 Partial Content) natively, and allows direct deployment behind Traefik or any standard reverse proxy.

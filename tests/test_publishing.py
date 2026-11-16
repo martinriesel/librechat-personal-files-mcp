@@ -138,12 +138,13 @@ def test_endpoint_404_when_unknown(client: TestClient):
     assert resp.json()["error"] == "link_not_found"
 
 
-def test_endpoint_returns_x_accel_redirect(client: TestClient, ctx):
+def test_endpoint_returns_file_content(client: TestClient, ctx):
     _write_file(ctx, "docs/a.md")
     rec = publishing.publish(ctx, USER_A, "docs/a.md", expires_in_days=1)
     resp = client.get(f"/files/{rec.token}")
     assert resp.status_code == 200
-    assert resp.headers["X-Accel-Redirect"] == f"/_protected/{USER_A}/docs/a.md"
+    assert resp.content == b"hello world"
+    assert "X-Accel-Redirect" not in resp.headers
     assert "attachment" in resp.headers["Content-Disposition"]
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
     assert resp.headers["Cache-Control"] == "private, no-store"
@@ -154,7 +155,27 @@ def test_endpoint_head_works(client: TestClient, ctx):
     rec = publishing.publish(ctx, USER_A, "docs/a.md", expires_in_days=1)
     resp = client.head(f"/files/{rec.token}")
     assert resp.status_code == 200
-    assert resp.headers["X-Accel-Redirect"] == f"/_protected/{USER_A}/docs/a.md"
+    assert resp.content == b""
+    assert "X-Accel-Redirect" not in resp.headers
+    assert "attachment" in resp.headers["Content-Disposition"]
+
+
+def test_endpoint_range_request_supported(client: TestClient, ctx):
+    _write_file(ctx, "docs/a.md")
+    rec = publishing.publish(ctx, USER_A, "docs/a.md", expires_in_days=1)
+    resp = client.get(f"/files/{rec.token}", headers={"Range": "bytes=0-4"})
+    assert resp.status_code == 206
+    assert resp.content == b"hello"
+
+
+def test_endpoint_file_deleted_from_disk_returns_404(client: TestClient, ctx):
+    _write_file(ctx, "docs/a.md")
+    rec = publishing.publish(ctx, USER_A, "docs/a.md", expires_in_days=1)
+    abs_path = storage.resolve(ctx.storage_cfg, USER_A, "docs/a.md")
+    abs_path.unlink()
+    resp = client.get(f"/files/{rec.token}")
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "file_no_longer_exists"
 
 
 def test_endpoint_post_returns_405(client: TestClient):

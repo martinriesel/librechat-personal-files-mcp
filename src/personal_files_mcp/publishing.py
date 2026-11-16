@@ -2,9 +2,10 @@
 
 Briefing §4.5: SQLite WAL at ``REGISTRY_DB``. Tokens are 128-bit
 ``secrets.token_urlsafe(16)`` values with no user/path leakage. The endpoint
-returns ``X-Accel-Redirect`` so Nginx can serve the actual file from a
-read-only bind mount. ``HEAD`` mirrors ``GET`` with no body. Other methods
-return 405.
+delivers files directly via Starlette ``FileResponse`` with chunk streaming,
+Range request support (HTTP 206), attachment disposition, nosniff, and no-store,
+without requiring Nginx ``X-Accel-Redirect``. ``HEAD`` mirrors ``GET`` with no body.
+Other methods return 405.
 
 Lazy cleanup:
     * Expired entries older than 24h are removed by the periodic
@@ -23,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from . import storage
 from .runtime import AppContext
@@ -409,24 +410,34 @@ async def _serve(
     # Defense in depth: re-resolve the path through storage. If a path was
     # deleted from disk the registry might still hold a stale entry.
     try:
-        storage.resolve(ctx.storage_cfg, record.user_id, record.relative_path)
+        abs_path = storage.resolve(ctx.storage_cfg, record.user_id, record.relative_path)
     except storage.StorageError:
+        return JSONResponse(
+            status_code=404, content={"error": "file_no_longer_exists"}
+        )
+
+    if not abs_path.is_file():
         return JSONResponse(
             status_code=404, content={"error": "file_no_longer_exists"}
         )
 
     registry.touch(token)
 
-    accel = f"/_protected/{record.user_id}/{record.relative_path}"
     headers = {
-        "X-Accel-Redirect": accel,
-        "Content-Disposition": f'attachment; filename="{_safe_filename(record.filename)}"',
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, no-store",
     }
-    if record.mime_type:
-        headers["Content-Type"] = record.mime_type
-    return Response(status_code=200, content=b"" if head else b"", headers=headers)
+    media_type = record.mime_type or "application/octet-stream"
+    safe_name = _safe_filename(record.filename)
+
+    return FileResponse(
+        path=abs_path,
+        filename=safe_name,
+        media_type=media_type,
+        content_disposition_type="attachment",
+        headers=headers,
+        method=request.method,
+    )
 
 
 def _safe_filename(name: str) -> str:

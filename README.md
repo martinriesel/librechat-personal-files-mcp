@@ -14,7 +14,7 @@ MCP server providing per-user personal file storage, persistent documentation, R
 - **Binary file support**: `write_binary_file` / `read_binary_file` (base64) MCP tools plus a `POST /binary` multipart endpoint (service-token authenticated) so other services — e.g. the Office-documents fork — can store generated `.docx`/`.xlsx`/`.pptx` files per user.
 - **Documentation catalog**: `save_documentation` / `update_documentation` write to `docs/` and update `memory-index.json` (schema v2).
 - **RAG integration**: `index_document` sends content to rag_api via `POST /embed` with canary verification; `search_knowledge` for semantic search; `remove_from_knowledge` for deletion.
-- **Public publishing**: `publish_file` creates cryptographically random tokens (≥128 bits); files served via Nginx `X-Accel-Redirect` with `Content-Disposition: attachment`, `nosniff`, `no-store`.
+- **Public publishing**: `publish_file` creates cryptographically random tokens (≥128 bits); files served directly via streaming `FileResponse` with `Content-Disposition: attachment`, `nosniff`, `no-store`, and HTTP Range support (compatible with Traefik/Dokploy and Nginx).
 - **Strict security**: Fail-closed on missing/invalid `X-User-Id`; path traversal blocked; no absolute paths; no `..` segments; symlink escape detection; reserved segment protection; atomic index writes with cross-process locking.
 
 ## Architecture
@@ -28,13 +28,12 @@ MCP server providing per-user personal file storage, persistent documentation, R
                             │ GET /files/{token}
                             ▼
                      ┌──────────────┐
-                     │ Nginx        │
-                     │ (X-Accel)    │
+                     │ Proxy/Router │  (Traefik / Nginx)
                      └──────────────┘
                             │
                             ▼
                      ┌──────────────┐
-                     │ /data/private│  (read-only bind)
+                     │ Public Client│  (Direct chunk streaming)
                      └──────────────┘
 ```
 
@@ -42,7 +41,7 @@ MCP server providing per-user personal file storage, persistent documentation, R
 
 - A running [LibreChat](https://www.librechat.ai/) instance with `rag_api` enabled.
 - A `JWT_SECRET` shared with LibreChat and `rag_api` (see below).
-- Nginx as the reverse proxy in front of LibreChat (required for public links via `X-Accel-Redirect`).
+- A reverse proxy (Traefik in Dokploy, or Nginx) routing `/files/` to the MCP container.
 
 ## Installation
 
@@ -84,44 +83,38 @@ grep -q '^JWT_SECRET=' .env || echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
 
 ### 3. Add the service to your compose file
 
-Add the blocks from `docker-compose.snippet.yml` to your `docker-compose.override.yml`:
+Add the service block from `docker-compose.snippet.yml` to your `docker-compose.override.yml`:
 
 - A `librechat-personal-files` service (image, environment, volumes, networks).
-- An extra read-only volume `./data/private:/data/private:ro` on the `nginx` service.
 
 Set `PUBLIC_BASE_URL` to your own public URL, e.g. `https://chat.example.com/files`.
 
 Then start it:
 
 ```bash
-docker compose up -d librechat-personal-files nginx
+docker compose up -d librechat-personal-files
 ```
 
-### 4. Configure the Nginx reverse proxy
+### 4. Configure the reverse proxy (Traefik or Nginx)
 
-Add these blocks to your existing Nginx server block (the same file LibreChat uses):
+#### Option A: Traefik (Dokploy)
+In the Dokploy dashboard, configure a Domain for `librechat-personal-files`:
+- **Host**: `chat.example.com`
+- **Path**: `/files/`
+- **Internal Port**: `8080`
+- **HTTPS**: enabled
+
+#### Option B: Nginx
+Add this location to your existing Nginx server block:
 
 ```nginx
-limit_req_zone $binary_remote_addr zone=pubfiles:10m rate=5r/s;
-
 location ^~ /files/ {
-    limit_req zone=pubfiles burst=10 nodelay;
-    limit_req_status 429;
     proxy_pass http://librechat-personal-files:8080/files/;
-    proxy_set_header X-Original-URI $request_uri;
+    proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
 }
-
-location ^~ /_protected/ {
-    internal;
-    alias /data/private/;
-}
-```
-
-Reload Nginx:
-
-```bash
-docker exec <nginx-container> nginx -s reload
 ```
 
 ### 5. Activate the MCP server in LibreChat
