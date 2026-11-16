@@ -436,7 +436,6 @@ async def _serve(
         media_type=media_type,
         content_disposition_type="attachment",
         headers=headers,
-        method=request.method,
     )
 
 
