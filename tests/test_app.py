@@ -275,7 +275,9 @@ def test_binary_upload_rejects_oversized_file(tmp_path: Path):
 
 def test_tool_catalog_includes_get_project_context(ctx: AppContext):
     import asyncio
+
     from fastmcp import FastMCP
+
     from personal_files_mcp.app import register_mcp_tools
 
     mcp = FastMCP("test")

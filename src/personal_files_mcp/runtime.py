@@ -7,7 +7,6 @@ the context dataclass).
 from __future__ import annotations
 
 from dataclasses import dataclass
-
 from typing import Any
 
 from . import storage

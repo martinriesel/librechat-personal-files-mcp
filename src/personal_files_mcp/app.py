@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, UploadFile
@@ -92,10 +92,8 @@ def create_app(context: AppContext | None = None) -> FastAPI:
             yield
         # Graceful shutdown of project resolver resources
         if ctx.project_resolver and getattr(ctx.project_resolver, "_client", None):
-            try:
+            with suppress(Exception):
                 ctx.project_resolver._client.close()
-            except Exception:
-                pass
 
     app = FastAPI(
         title="librechat-personal-files-mcp",

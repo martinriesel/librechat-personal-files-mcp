@@ -13,7 +13,13 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from bson import ObjectId
+try:
+    from bson import ObjectId
+except ImportError:  # pragma: no cover
+    try:
+        from bson.objectid import ObjectId  # type: ignore
+    except ImportError:
+        ObjectId = None  # type: ignore
 
 from .config import AppSettings
 from .diagnostics import log_context_event
@@ -150,7 +156,7 @@ class ProjectResolver:
                 )
                 if conv is not None:
                     break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 elapsed = int((time.monotonic() - start_time) * 1000)
                 log_context_event(
                     settings,
@@ -207,7 +213,10 @@ class ProjectResolver:
 
         # 2. Validate and fetch project
         try:
-            proj_obj_id = ObjectId(str(chat_project_id))
+            if ObjectId is not None:
+                proj_obj_id = ObjectId(str(chat_project_id))
+            else:
+                proj_obj_id = str(chat_project_id)
         except Exception:
             elapsed = int((time.monotonic() - start_time) * 1000)
             log_context_event(
@@ -228,7 +237,7 @@ class ProjectResolver:
                 ),
                 timeout=self._timeout_sec,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             elapsed = int((time.monotonic() - start_time) * 1000)
             log_context_event(
                 settings,

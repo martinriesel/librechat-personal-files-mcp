@@ -5,10 +5,22 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from bson import ObjectId
+
+try:
+    from bson import ObjectId
+except ImportError:
+    class ObjectId:  # type: ignore
+        def __init__(self, val=None):
+            self.val = str(val or "609c1b2c3d4e5f60718293a4")
+
+        def __str__(self):
+            return self.val
+
+        def __eq__(self, other):
+            return str(self) == str(other)
 
 from personal_files_mcp.config import AppSettings
-from personal_files_mcp.project_resolver import ProjectResolutionResult, ProjectResolver
+from personal_files_mcp.project_resolver import ProjectResolver
 
 USER_ID = "5f8d3a4b2c1e0d0001a2b3c4"
 OTHER_USER = "609c1b2c3d4e5f60718293a4"
