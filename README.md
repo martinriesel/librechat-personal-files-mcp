@@ -104,6 +104,8 @@ In the Dokploy dashboard, configure a Domain for `librechat-personal-files`:
 - **Internal Port**: `8080`
 - **HTTPS**: enabled
 
+See [docs/links-publicos-dokploy-traefik.md](docs/links-publicos-dokploy-traefik.md) for architecture details and verification steps.
+
 #### Option B: Nginx
 Add this location to your existing Nginx server block:
 
@@ -140,6 +142,8 @@ mcpServers:
 ```
 
 Restart LibreChat. The `personal-files` server will be available to your agents.
+
+See [docs/mongodb-permissions-dokploy.md](docs/mongodb-permissions-dokploy.md) for Docker shared network setup, MongoDB `mcp_project_reader` user creation, and connection parameters.
 
 > [!IMPORTANT]
 > Use `streamable-http` at `/mcp` only. SSE at `/mcp/sse` is **not supported** and should not be configured.
