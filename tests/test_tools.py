@@ -317,8 +317,9 @@ def test_save_documentation_with_project(cfg):
     assert payload["project_id"] == "proj_alpha"
     assert payload["project_name"] == "Alpha"
 
-    entry = docindex.new_docindex(cfg, USER).get("docs/spec.md")
+    entry = docindex.get_project_catalog(cfg, USER, "proj_alpha").get("spec.md")
     assert entry is not None
+    assert entry.file == "projects/proj_alpha/spec.md"
     assert entry.project_id == "proj_alpha"
     assert entry.project_name == "Alpha"
     assert entry.conversation_id == "conv_1"
@@ -345,8 +346,9 @@ def test_update_documentation_preserves_project(cfg):
     assert payload["project_id"] == "proj_alpha"
     assert payload["project_name"] == "Alpha"
 
-    entry = docindex.new_docindex(cfg, USER).get("docs/spec.md")
+    entry = docindex.get_project_catalog(cfg, USER, "proj_alpha").get("spec.md")
     assert entry is not None
+    assert entry.file == "projects/proj_alpha/spec.md"
     assert entry.project_id == "proj_alpha"
 
 
@@ -372,13 +374,13 @@ def test_list_documentation(cfg):
     out1 = tools.list_documentation(cfg, USER, project_id="proj_1")
     p1 = _ok_payload(out1)
     assert p1["count"] == 1
-    assert p1["documents"][0]["file"] == "docs/doc1.md"
+    assert p1["documents"][0]["file"] == "projects/proj_1/doc1.md"
 
     # Filter by tag
     out_tag = tools.list_documentation(cfg, USER, tag="sql")
     p_tag = _ok_payload(out_tag)
     assert p_tag["count"] == 1
-    assert p_tag["documents"][0]["file"] == "docs/doc1.md"
+    assert p_tag["documents"][0]["file"] == "projects/proj_1/doc1.md"
 
 
 def test_search_knowledge_project_scoping(cfg, monkeypatch):

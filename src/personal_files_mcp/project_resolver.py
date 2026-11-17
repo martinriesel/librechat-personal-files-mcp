@@ -292,3 +292,32 @@ class ProjectResolver:
             project_name=proj.get("name", ""),
             project_description=proj.get("description", ""),
         )
+
+    async def list_user_projects(
+        self,
+        settings: AppSettings,
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        """List all projects belonging to user_id in LibreChat MongoDB."""
+        if not self._client:
+            return []
+        db = self._client[self._db_name]
+        try:
+            cursor = db.chatprojects.find(
+                {"user": user_id},
+                projection={"_id": 1, "name": 1, "description": 1},
+            )
+            projects = await asyncio.wait_for(
+                cursor.to_list(length=100), timeout=self._timeout_sec
+            )
+            return [
+                {
+                    "id": str(p["_id"]),
+                    "name": p.get("name", ""),
+                    "description": p.get("description", ""),
+                }
+                for p in projects
+            ]
+        except Exception as exc:
+            logger.warning("failed to list user projects from mongo: %s", exc)
+            return []

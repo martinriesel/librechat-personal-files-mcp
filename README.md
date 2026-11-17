@@ -191,7 +191,7 @@ strategy).
 - `list_files(path="", recursive=false, pattern=null)` — list files/dirs
 - `read_file(path)` — read UTF-8 text; error for binary or >2 MB
 - `read_multiple_files(paths)` — read several text files at once
-- `write_file(path, content)` — write text (UTF-8), creates parent dirs
+- `write_file(path, content)` — write text (UTF-8), creates parent dirs (protected from modifying `memory-index.json`)
 - `write_binary_file(path, content_base64)` — write a binary file (e.g. Office documents); uses the binary size limit, never indexes
 - `read_binary_file(path)` — read any file as base64 (binary or text)
 - `update_file(path, content)` — update existing file
@@ -200,19 +200,29 @@ strategy).
 - `move_file(src, dst)` — move within user root
 - `get_file_info(path)` — metadata + docindex + publishing status
 
-### Documentation
+### Documentation (Multi-Scope Catalog)
 
-- `save_documentation(filename, content, title?, description?, tags?, topics?, project_id?, project_name?)` — saves to `docs/`, updates index, automatically associates with active project if running in a project conversation.
-- `update_documentation(filename, content, title?, description?, tags?, topics?, project_id?, project_name?)` — update existing doc, preserves/refreshes project association.
-- `get_document_metadata(filename)` — full index entry.
-- `list_documentation(project_id?, tag?)` — list registered documentation catalog entries with optional project and tag filtering.
+Documentation files and catalogs follow a structured hierarchy:
+- General scope: `docs/*.md` with catalog `docs/memory-index.json`
+- Project scope: `projects/<project_id>/*.md` with catalog `projects/<project_id>/memory-index.json`
+- Direct LLM writes/edits/deletions of any `memory-index.json` are rejected (`protected_file`).
 
-### RAG
+Tools:
+- `save_documentation(filename, content, title?, description?, tags?, topics?, project_id?, project_name?)` — auto-routes to `projects/<project_id>/` for project chats, or `docs/` for chats proven without a project. Fails closed (`project_resolution_failed`) if resolver errors.
+- `update_documentation(filename, content, title?, description?, tags?, topics?, project_id?, project_name?)` — updates existing doc across catalogs, preserving existing project association.
+- `get_document_metadata(filename)` — looks up document across catalogs by `doc_id`, relative path, or filename. Returns metadata including `modified_since_indexing`.
+- `list_documentation(project_id?, tag?, unassigned_only=false)` — lists registered documentation across scopes or filtered by project/unassigned, reporting `doc_id` and indexing status.
+- `register_documentation(path, title?, description?, tags?, topics?, project_id?, project_name?)` — registers an existing `.md`/`.txt` file on disk into the catalog without rewriting its contents.
+- `transfer_documentation(identifier, target_project_id?, target_filename?, dry_run=false)` — transfers a document between general and project scopes or between projects, preserving `doc_id`, metadata, RAG status, and public link URLs. Supports collision detection and dry-run preview.
+- `reconcile_documentation(project_id?, repair=false)` — scans for unregistered files on disk, orphaned catalog entries, and modified files after indexing. Repairs discrepancies only when `repair=true`.
+
+### RAG & Batch Indexing
 
 - `search_knowledge(query, limit=8, project_id?, scope="auto")` — semantic search with project scoping (`auto`, `project`, `personal`, `all`). Strict isolation: in a project conversation, candidate documents are strictly restricted to the active project's indexed files with zero cross-project leakage.
-- `index_document(path)` — embed + canary verify, updates index status
-- `remove_from_knowledge(path)` — delete from rag_api, clears index
-- `get_index_status()` — counts + rag_api health
+- `index_document(path)` — embed + canary verify, updates index status and records content SHA-256 (`indexed_sha256`) to track post-index modifications.
+- `index_batch(doc_ids?, project_id?, only_pending=false, only_modified=false)` — batch indexes multiple candidate documents (selected, pending, or modified) with individual per-file status reporting.
+- `remove_from_knowledge(path)` — delete from rag_api, clears index.
+- `get_index_status()` — returns counts of total, indexed, pending, failed, and modified-after-indexing documents, plus rag_api health.
 
 ### Publishing
 
@@ -221,9 +231,10 @@ strategy).
 - `get_public_link(path)` — active link for path
 - `list_public_links()` — all links for user
 
-### Project Context & Memory
+### Project Context & Management
 
 - `get_project_context()` — resolves the active LibreChat project for the current conversation via read-only MongoDB query (`conversations` -> `chatprojects`). Returns structured JSON with status (`project`, `no_project`, `conversation_unavailable`, `context_missing`, etc.), project documents catalog, and `summary_file` if present.
+- `list_projects()` — lists authorized LibreChat projects from MongoDB combined with on-disk project directories, including document counts and indexing status. See [docs/mongodb-permissions-dokploy.md](docs/mongodb-permissions-dokploy.md) for database user configuration.
 
 ## Security Model
 

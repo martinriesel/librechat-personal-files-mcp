@@ -287,6 +287,11 @@ def test_tool_catalog_includes_get_project_context(ctx: AppContext):
     tool_names = {t.name for t in tools_list}
     assert "get_project_context" in tool_names
     assert "list_documentation" in tool_names
+    assert "list_projects" in tool_names
+    assert "register_documentation" in tool_names
+    assert "transfer_documentation" in tool_names
+    assert "reconcile_documentation" in tool_names
+    assert "index_batch" in tool_names
 
 
 def test_identity_middleware_captures_conversation_headers(client: TestClient):

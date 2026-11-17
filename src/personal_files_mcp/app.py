@@ -525,11 +525,10 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         project_id: str | None = None,
         project_name: str | None = None,
     ) -> str:
-        """Save a documentation file under ``docs/`` and update the user index.
+        """Save a documentation file and register it in the user's memory index.
 
-        Does not publish or index automatically; suggests ``index_document`` as
-        the follow-up. Automatically associates with the active project if running
-        inside a LibreChat project.
+        Automatically routes to projects/<project_id>/ if within a project conversation,
+        or docs/ if proven without a project. Fails closed if project resolution errors.
         """
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
@@ -540,17 +539,34 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         if req_ctx and req_ctx.conversation_id:
             conv_id = conv_id or req_ctx.conversation_id
 
+        conv_status = getattr(request.state, "conversation_status", "valid")
+        request_id = getattr(request.state, "request_id", "")
+        resolver_status: str | None = None
+
         if not project_id and conv_id and getattr(app_ctx, "project_resolver", None):
             res = await app_ctx.project_resolver.resolve(
                 app_ctx.settings,
                 user_id=uid,
                 conversation_id=conv_id,
-                conv_status=getattr(request.state, "conversation_status", "valid"),
-                request_id=getattr(request.state, "request_id", ""),
+                conv_status=conv_status,
+                request_id=request_id,
             )
+            resolver_status = res.status
             if res.status == "project":
                 project_id = res.project_id
                 project_name = res.project_name
+            elif res.status in (
+                "conversation_unavailable",
+                "resolver_unavailable",
+                "project_unavailable",
+                "context_invalid",
+            ):
+                return tools._err(
+                    "project_resolution_failed",
+                    f"Project resolution status '{res.status}': cannot determine destination scope.",
+                    resolver_status=res.status,
+                    retry_recommended=res.retry_recommended,
+                )
 
         return tools.save_documentation(
             app_ctx.storage_cfg,
@@ -564,10 +580,11 @@ def register_mcp_tools(mcp: FastMCP) -> None:
             project_id=project_id,
             project_name=project_name,
             conversation_id=conv_id,
+            resolver_status=resolver_status,
         )
 
     @mcp.tool()
-    async def update_documentation(
+    def update_documentation(
         ctx: Context,
         filename: str,
         content: str,
@@ -580,28 +597,10 @@ def register_mcp_tools(mcp: FastMCP) -> None:
     ) -> str:
         """Update an existing documentation file and refresh its index entry.
 
-        Fails if the file does not exist.
+        Preserves existing project association across catalogs.
         """
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
-
-        request = ctx.request_context.request
-        req_ctx = project_context.get_request_context()
-        conv_id = getattr(request.state, "conversation_id", None)
-        if req_ctx and req_ctx.conversation_id:
-            conv_id = conv_id or req_ctx.conversation_id
-
-        if not project_id and conv_id and getattr(app_ctx, "project_resolver", None):
-            res = await app_ctx.project_resolver.resolve(
-                app_ctx.settings,
-                user_id=uid,
-                conversation_id=conv_id,
-                conv_status=getattr(request.state, "conversation_status", "valid"),
-                request_id=getattr(request.state, "request_id", ""),
-            )
-            if res.status == "project":
-                project_id = res.project_id
-                project_name = res.project_name
 
         return tools.update_documentation(
             app_ctx.storage_cfg,
@@ -614,12 +613,11 @@ def register_mcp_tools(mcp: FastMCP) -> None:
             topics,
             project_id=project_id,
             project_name=project_name,
-            conversation_id=conv_id,
         )
 
     @mcp.tool()
     def get_document_metadata(ctx: Context, filename: str) -> str:
-        """Return the full documentation index entry for a filename."""
+        """Return the full documentation index entry for a filename or doc_id."""
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
         return tools.get_document_metadata(app_ctx.storage_cfg, uid, filename)
@@ -629,12 +627,104 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         ctx: Context,
         project_id: str | None = None,
         tag: str | None = None,
+        unassigned_only: bool = False,
     ) -> str:
         """List documentation files and metadata registered in the memory index."""
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
         return tools.list_documentation(
-            app_ctx.storage_cfg, uid, project_id=project_id, tag=tag
+            app_ctx.storage_cfg,
+            uid,
+            project_id=project_id,
+            tag=tag,
+            unassigned_only=unassigned_only,
+        )
+
+    @mcp.tool()
+    def register_documentation(
+        ctx: Context,
+        path: str,
+        title: str | None = None,
+        description: str | None = None,
+        tags: list[str] | None = None,
+        topics: list[str] | None = None,
+        project_id: str | None = None,
+        project_name: str | None = None,
+    ) -> str:
+        """Register an existing markdown or text file into the catalog without rewriting.
+
+        Args:
+            path: relative file path inside user root (e.g. ``docs/guide.md`` or ``projects/p1/guide.md``).
+            title: optional title (extracted from heading if omitted).
+            description: optional description.
+            tags: optional tag list.
+            topics: optional topic list.
+            project_id: optional project ID association.
+            project_name: optional project name.
+        """
+        app_ctx = _get_app_ctx(ctx)
+        uid = _get_user_id(ctx)
+        return tools.register_documentation(
+            app_ctx.storage_cfg,
+            uid,
+            path,
+            title=title,
+            description=description,
+            tags=tags,
+            topics=topics,
+            project_id=project_id,
+            project_name=project_name,
+        )
+
+    @mcp.tool()
+    def transfer_documentation(
+        ctx: Context,
+        identifier: str,
+        target_project_id: str | None = None,
+        target_filename: str | None = None,
+        dry_run: bool = False,
+    ) -> str:
+        """Transfer documentation file and index record between scopes.
+
+        Transfers between general scope (docs/) and project scope (projects/<project_id>/)
+        or between projects. Preserves stable doc_id, metadata, public links, and RAG status.
+        Performs collision detection and supports dry_run preview.
+
+        Args:
+            identifier: file path or doc_id of the document to transfer.
+            target_project_id: destination project ID (omit or None for general docs/ scope).
+            target_filename: optional new filename in destination (defaults to current filename).
+            dry_run: if True, validates transfer and returns preview without moving.
+        """
+        app_ctx = _get_app_ctx(ctx)
+        uid = _get_user_id(ctx)
+        return tools.transfer_documentation(
+            app_ctx.storage_cfg,
+            uid,
+            identifier,
+            target_project_id=target_project_id,
+            target_filename=target_filename,
+            dry_run=dry_run,
+        )
+
+    @mcp.tool()
+    def reconcile_documentation(
+        ctx: Context,
+        project_id: str | None = None,
+        repair: bool = False,
+    ) -> str:
+        """Detect unregistered files, orphaned catalog entries, and modified files after indexing.
+
+        Only repairs catalog discrepancies when repair=True.
+
+        Args:
+            project_id: optional project ID to restrict reconciliation; omit for all catalogs.
+            repair: if True, registers missing files and purges orphaned catalog entries.
+        """
+        app_ctx = _get_app_ctx(ctx)
+        uid = _get_user_id(ctx)
+        return tools.reconcile_documentation(
+            app_ctx.storage_cfg, uid, project_id=project_id, repair=repair
         )
 
     # --- Publishing ---
@@ -760,7 +850,41 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         uid = _get_user_id(ctx)
         return tools.get_index_status(app_ctx.storage_cfg, uid)
 
+    @mcp.tool()
+    def index_batch(
+        ctx: Context,
+        doc_ids: list[str] | None = None,
+        project_id: str | None = None,
+        only_pending: bool = False,
+        only_modified: bool = False,
+    ) -> str:
+        """Batch index multiple documentation files into the RAG knowledge base.
+
+        Args:
+            doc_ids: optional list of specific doc_ids or paths to index.
+            project_id: optional project ID filter.
+            only_pending: if True, index only documents not yet indexed.
+            only_modified: if True, index only documents whose disk content changed since last index.
+        """
+        app_ctx = _get_app_ctx(ctx)
+        uid = _get_user_id(ctx)
+        return tools.index_batch(
+            app_ctx.storage_cfg,
+            uid,
+            doc_ids=doc_ids,
+            project_id=project_id,
+            only_pending=only_pending,
+            only_modified=only_modified,
+        )
+
     # --- Project context ---
+
+    @mcp.tool()
+    async def list_projects(ctx: Context) -> str:
+        """List all authorized projects for the current user with document counts and indexing status."""
+        app_ctx = _get_app_ctx(ctx)
+        uid = _get_user_id(ctx)
+        return await tools.list_projects(app_ctx, uid)
 
     @mcp.tool()
     async def get_project_context(ctx: Context) -> str:

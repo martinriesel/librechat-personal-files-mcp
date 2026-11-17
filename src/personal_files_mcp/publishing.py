@@ -246,6 +246,18 @@ class LinkRegistry:
                 (now, token),
             )
 
+    def update_path(self, user_id: str, old_path: str, new_path: str) -> bool:
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE public_links
+                SET relative_path = ?
+                WHERE user_id = ? AND relative_path = ? AND revoked_at IS NULL
+                """,
+                (new_path, user_id, old_path),
+            )
+            return cursor.rowcount > 0
+
     def delete(self, token: str) -> None:
         with self._conn() as conn:
             conn.execute("DELETE FROM public_links WHERE token = ?", (token,))
@@ -358,6 +370,12 @@ def list_links(ctx: AppContext, user_id: str) -> list[LinkRecord]:
 
 def get_link(ctx: AppContext, user_id: str, path: str) -> LinkRecord | None:
     return get_registry(ctx).get_for_user(user_id, path)
+
+
+def update_link_path(
+    ctx: AppContext, user_id: str, old_path: str, new_path: str
+) -> bool:
+    return get_registry(ctx).update_path(user_id, old_path, new_path)
 
 
 def public_url(ctx: AppContext, record: LinkRecord) -> str:
