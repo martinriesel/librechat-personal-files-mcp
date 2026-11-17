@@ -12,7 +12,7 @@ MCP server providing per-user personal file storage, persistent documentation, R
 
 - **Per-user storage**: Private files under `/data/private/<userId>/` with full CRUD, list, move operations.
 - **Binary file support**: `write_binary_file` / `read_binary_file` (base64) MCP tools plus a `POST /binary` multipart endpoint (service-token authenticated) so other services — e.g. the Office-documents fork — can store generated `.docx`/`.xlsx`/`.pptx` files per user.
-- **Documentation catalog**: `save_documentation` / `update_documentation` write to `docs/` and update `memory-index.json` (schema v2).
+- **Multi-scope documentation catalog**: `save_documentation` auto-routes to `projects/<project_id>/` or `docs/` with fail-closed resolver; each scope maintains its own `memory-index.json` (schema v3). Catalog files are protected from direct LLM writes.
 - **RAG integration**: `index_document` sends content to rag_api via `POST /embed` with canary verification; `search_knowledge` for semantic search; `remove_from_knowledge` for deletion.
 - **Public publishing**: `publish_file` creates cryptographically random tokens (≥128 bits); files served directly via streaming `FileResponse` with `Content-Disposition: attachment`, `nosniff`, `no-store`, and HTTP Range support (compatible with Traefik/Dokploy and Nginx).
 - **Strict security**: Fail-closed on missing/invalid `X-User-Id`; path traversal blocked; no absolute paths; no `..` segments; symlink escape detection; reserved segment protection; atomic index writes with cross-process locking.
@@ -141,6 +141,23 @@ mcpServers:
 
 Restart LibreChat. The `personal-files` server will be available to your agents.
 
+> [!IMPORTANT]
+> Use `streamable-http` at `/mcp` only. SSE at `/mcp/sse` is **not supported** and should not be configured.
+
+### Enabling Tools in a LibreChat Agent
+
+After the MCP server is connected, enable specific tools in your agent configuration:
+
+1. Go to **Admin Panel → Agents** (or edit your agent YAML).
+2. Under MCP servers, select `personal-files`.
+3. Enable the tools you want the agent to use. Key tools to enable:
+   - `save_documentation`, `update_documentation`, `list_documentation` — document management.
+   - `get_project_context`, `list_projects` — project discovery (read-only).
+   - `search_knowledge`, `index_document`, `index_batch` — RAG operations.
+   - `register_documentation`, `transfer_documentation`, `reconcile_documentation` — catalog maintenance.
+   - `publish_file`, `get_public_link` — public link management.
+4. Save and test the agent in a project conversation.
+
 ### 6. Service-to-service binary uploads (`POST /binary`)
 
 Other services can store files in a user's private storage without speaking
@@ -163,6 +180,15 @@ This is how the [Office-documents fork](https://github.com/ForLegalAI/mcp-ms-off
 stores generated `.docx`/`.xlsx`/`.pptx` files per user (see its `PERSONAL_FILES`
 strategy).
 
+### Volume Preservation & Deployment
+
+> [!CAUTION]
+> The volume mounted at `/data/private` contains all user files and documentation indexes. **Never delete or recreate this volume** during version upgrades.
+
+- **Use published images**: Deploy stable tags from `ghcr.io/martinriesel/librechat-personal-files-mcp:<tag>`.
+- **Avoid fixed `container_name`**: Let Dokploy manage container lifecycle for safe rolling updates and rollbacks.
+- **Verify networks after changes**: After modifying network settings in Dokploy, verify effective networks with `docker inspect <container>` — saving the option or restarting may not be sufficient.
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -182,7 +208,10 @@ strategy).
 | `LIBRECHAT_MONGO_DB` | `LibreChat` | MongoDB database name |
 | `LIBRECHAT_MONGO_TIMEOUT_MS` | `2000` | Timeout in ms for project resolution queries |
 | `PERSONAL_FILES_LOG_LEVEL` | `INFO` | Application log level (`OFF`, `ERROR`, `WARNING`, `INFO`, `DEBUG`) |
-| `PERSONAL_FILES_CONTEXT_DIAGNOSTICS` | `false` | Enable single-line JSON context diagnostic logging |
+| `PERSONAL_FILES_CONTEXT_DIAGNOSTICS` | `false` | Enable single-line JSON context diagnostic logging (see [docs/diagnostics-and-logs.md](docs/diagnostics-and-logs.md)) |
+
+> [!TIP]
+> Set `PERSONAL_FILES_CONTEXT_DIAGNOSTICS=false` in production after initial validation is complete. See [docs/diagnostics-and-logs.md](docs/diagnostics-and-logs.md) for troubleshooting guidance.
 
 ## MCP Tools
 

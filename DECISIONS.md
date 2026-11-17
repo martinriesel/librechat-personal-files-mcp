@@ -118,3 +118,31 @@ way they are.
 ## D027 — Project-scoped RAG isolation and auto-scoping (Fase 5)
 **Decision:** Add `project_id: str | None = None` and `scope: str = "auto"` to `search_knowledge`. In project conversations (`scope="project"` or `scope="auto"` with active project), restrict candidate `file_ids` sent to `client.query_multiple` strictly to documents where `entry.project_id == active_project_id`. If the active project has no indexed documents, return immediately with `count: 0` and an informative note without dispatching queries to `rag_api`. Support explicit personal (`scope="personal"`) and global (`scope="all"`) searches.
 **Reason:** Guarantees strict multi-project isolation for semantic search. A conversation in Project A will never receive chunk matches or metadata from Project B or unrelated personal documents, avoiding context poisoning while eliminating wasted RAG API calls.
+
+## D028 — Multi-scope catalog with physical separation
+**Decision:** Maintain physically separate `memory-index.json` files: `docs/memory-index.json` for the general scope and `projects/<project_id>/memory-index.json` per project. Helper functions `get_project_catalog()`, `get_general_catalog()`, `get_catalog_for_path()`, `get_all_catalogs()`, `find_document_across_catalogs()`, and `list_all_documents()` abstract multi-catalog operations. The legacy root `memory-index.json` (if any) is preserved and readable but not the primary catalog.
+**Reason:** Physical separation ensures that cross-process file locks on catalogs cannot block unrelated projects, simplifies backup/restore per project, and aligns catalog location with file location (`projects/<id>/` files indexed in `projects/<id>/memory-index.json`).
+
+## D029 — Fail-closed routing for `save_documentation`
+**Decision:** When the project resolver returns an error status (`conversation_unavailable`, `resolver_unavailable`, `project_unavailable`, `context_invalid`), `save_documentation` returns `ERROR: project_resolution_failed — <reason>` instead of silently falling back to the `docs/` directory. The fail-closed check is enforced in both `app.py` (MCP layer, which owns the resolver) and `tools.py` (via `resolver_status` parameter, defense-in-depth).
+**Reason:** Silent fallback would scatter project documents into the general catalog with no trace, making later reconciliation nearly impossible. Explicit failure lets the LLM retry or ask the user for explicit routing.
+
+## D030 — Catalog protection against LLM-initiated writes
+**Decision:** `_is_protected_catalog_path()` rejects any path ending in `memory-index.json` or matching `*.lock`. All generic file tools (`write_file`, `update_file`, `delete_file`, `move_file`, `edit_file`, `write_binary_file`) call this guard before proceeding.
+**Reason:** The user specified that the LLM must never write `memory-index.json` directly. All catalog mutations flow through dedicated tools (`save_documentation`, `register_documentation`, `transfer_documentation`, `reconcile_documentation`).
+
+## D031 — Stable `doc_id` per document
+**Decision:** Every `DocumentEntry` receives a persistent `doc_id` formatted as `doc_<uuid_hex12>`. The ID is generated once at creation and preserved through content updates, transfers, and re-indexing. Lookup functions (`DocIndex.get()`, `find_document_across_catalogs()`) accept `doc_id`, relative path, or basename.
+**Reason:** Filenames can change (transfer, rename); a stable ID lets tools and external references survive path changes. The 12-hex-char suffix keeps IDs short enough for LLM tool calls.
+
+## D032 — `transfer_documentation` with collision detection and link preservation
+**Decision:** `transfer_documentation` moves the physical file, removes the entry from the source catalog, inserts it into the destination catalog (preserving `doc_id`, metadata, and RAG fields), detects target-path collisions, updates `LinkRegistry.update_path()` for public links, and supports `dry_run=true` for preview without side effects.
+**Reason:** Transfer across scopes is a multi-step operation (file move, two catalog updates, optional link update). Collision detection prevents silent overwrites; dry-run lets the LLM show the user what will happen before committing.
+
+## D033 — `index_batch` with factory closures
+**Decision:** `index_batch` iterates candidate documents and dispatches them through the existing RAG pipeline. Inner `async def flow` and `async def cleanup` are created via factory functions (`make_flow`, `make_cleanup`) to bind loop variables, avoiding ruff B023 (function defined in loop uses mutable variable).
+**Reason:** Batch indexing is the user's requirement for efficiency. The factory pattern satisfies both Python scoping semantics and ruff's lint rule without suppressing the warning.
+
+## D034 — `list_projects` combines MongoDB and disk state
+**Decision:** `list_projects` queries `chatprojects` from MongoDB (filtered by `{"user": user_id}`) and also scans `projects/` on disk. Projects found on disk but not in MongoDB are reported with `source: "disk_only"`. Each project entry includes `doc_count` and `indexed_count` from its catalog.
+**Reason:** A project may exist in MongoDB but have no local documents (yet), or local documents may exist for a project ID that the user no longer owns in LibreChat. Combining both sources gives the LLM a complete picture for reconciliation decisions.
