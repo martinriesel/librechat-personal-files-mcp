@@ -15,19 +15,19 @@ A confirmação cobre geração e abertura do link de teste. Downloads parciais,
 A ferramenta gerava links para:
 
 ```text
-https://gpt.loca.riesel.com.br/files/
+https://old-chat.example.com/files/
 ```
 
 O LibreChat atual utiliza:
 
 ```text
-https://gpt.riesel.com.br
+https://chat.example.com
 ```
 
 A variável foi corrigida no Dokploy para:
 
 ```env
-PUBLIC_BASE_URL=https://gpt.riesel.com.br/files
+PUBLIC_BASE_URL=https://chat.example.com/files
 ```
 
 O teste final confirmou que a ferramenta passou a gerar URLs nesse endereço.
@@ -85,7 +85,7 @@ ghcr.io/martinriesel/librechat-personal-files-mcp:1.1.0-test
 O container em execução foi confirmado na VPS:
 
 ```text
-rieselgpt-mcp-servers-ybdax9-librechat-personal-files-1
+<compose-project>-librechat-personal-files-1
 ```
 
 A saída de `docker ps` confirmou essa imagem em execução.
@@ -161,11 +161,11 @@ O serviço atual utiliza os volumes externos existentes:
 volumes:
   personal_private:
     external: true
-    name: rieselgpt-librechat-mlhfos_librechat_private
+    name: <existing-private-volume>
 
   personal_shared:
     external: true
-    name: rieselgpt-librechat-mlhfos_librechat_share
+    name: <existing-share-volume>
 ```
 
 Mounts do serviço:
@@ -193,7 +193,7 @@ A configuração orientada na aba Domains do aplicativo Compose foi:
 
 | Campo | Valor |
 |---|---|
-| Host | `gpt.riesel.com.br` |
+| Host | `chat.example.com` |
 | Serviço | `librechat-personal-files` |
 | Porta interna | `8080` |
 | Path | `/files/` |
@@ -253,7 +253,7 @@ Conteúdo fictício, sem dados pessoais ou credenciais.
 A ferramenta `publish_file` retornou uma URL no formato correto:
 
 ```text
-https://gpt.riesel.com.br/files/<token>
+https://chat.example.com/files/<token>
 ```
 
 O link foi criado com validade de um dia.

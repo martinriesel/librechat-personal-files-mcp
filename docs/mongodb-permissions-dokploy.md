@@ -8,10 +8,10 @@ Este documento descreve a arquitetura de integração entre o **Personal Files M
 
 Para que o MCP consulte o MongoDB do LibreChat com segurança e baixa latência:
 
-- **Rede interna compartilhada**: O container do MCP e o container do MongoDB devem pertencer à mesma rede Docker interna (ex.: `rieselgpt-backend`).
+- **Rede interna compartilhada**: O container do MCP e o container do MongoDB devem pertencer à mesma rede Docker interna (ex.: `<shared-network>`).
 - **Segurança da porta 27017**: A porta `27017` do MongoDB **não deve ser publicada para a Internet** nem para o host externo. O tráfego ocorre estritamente dentro da rede Docker privada.
 - **Configuração no Dokploy**:
-  - Nas configurações do container do MCP no Dokploy, adicione a rede do backend (ex.: `rieselgpt-backend`).
+  - Nas configurações do container do MCP no Dokploy, adicione a rede do backend (ex.: `<shared-network>`).
   - Certifique-se de aplicar a alteração e recriar o container (verifique as redes ativas com `docker inspect <container>`).
 
 ---

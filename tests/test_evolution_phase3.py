@@ -241,7 +241,7 @@ def test_transfer_preserves_public_link(cfg):
     settings = app.AppSettings(
         storage_root=str(cfg.storage_root),
         registry_db=str(cfg.storage_root / "public_links.db"),
-        public_base_url="https://gpt.riesel.com.br",
+        public_base_url="https://chat.example.com/files",
     )
     app_ctx = app.AppContext(settings=settings, storage_cfg=cfg)
     tools.bind_publish_ctx(app_ctx)
@@ -370,7 +370,7 @@ async def test_list_projects(cfg):
 
     async def fake_list_user_projects(s, uid):
         return [
-            {"id": "mongo_proj_1", "name": "Locaweb", "description": "Locaweb Cloud"},
+            {"id": "mongo_proj_1", "name": "Project Alpha", "description": "Example project"},
         ]
 
     resolver.list_user_projects = AsyncMock(side_effect=fake_list_user_projects)
@@ -392,7 +392,7 @@ async def test_list_projects(cfg):
     proj_map = {p["id"]: p for p in payload["projects"]}
 
     assert "mongo_proj_1" in proj_map
-    assert proj_map["mongo_proj_1"]["name"] == "Locaweb"
+    assert proj_map["mongo_proj_1"]["name"] == "Project Alpha"
     assert proj_map["mongo_proj_1"]["documents_count"] == 1
 
     assert "disk_proj_2" in proj_map
