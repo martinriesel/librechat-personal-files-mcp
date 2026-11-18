@@ -251,7 +251,7 @@ Tools:
 
 ### RAG & Batch Indexing
 
-- `search_knowledge(query, limit=8, project_id?, scope="auto")` — semantic search with project scoping (`auto`, `project`, `personal`, `all`). Strict isolation: in a project conversation, candidate documents are strictly restricted to the active project's indexed files with zero cross-project leakage.
+- `search_knowledge(query, limit=8, project_id?, scope="auto")` — semantic search with project scoping (`auto`, `project`, `personal`, `all`). In a project conversation, `auto` restricts candidate documents to the active project's indexed files. `auto` searches all documents only when the conversation is confirmed to have no project; if the project cannot be resolved it returns `project_resolution_failed` instead of widening the search. Project membership = explicit `project_id` metadata, or the `projects/<id>/` catalog the entry lives in (same rule as `list_projects` / `get_project_context`).
 - `index_document(path)` — embed + canary verify, updates index status and records content SHA-256 (`indexed_sha256`) to track post-index modifications.
 - `index_batch(doc_ids?, project_id?, only_pending=false, only_modified=false)` — batch indexes multiple candidate documents (selected, pending, or modified) with individual per-file status reporting.
 - `remove_from_knowledge(path)` — delete from rag_api, clears index.
@@ -260,7 +260,7 @@ Tools:
 ### Publishing
 
 - `publish_file(path, expires_in_days?)` — create/reuse public link, returns token + URL
-- `unpublish_file(path_or_token)` — revoke link (file stays private)
+- `unpublish_file(path_or_token)` — revoke link by token or path, including root-level files (file stays private)
 - `get_public_link(path)` — active link for path
 - `list_public_links()` — all links for user
 

@@ -26,7 +26,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from . import diagnostics, identity, project_context, project_resolver, publishing, storage, tools
+from . import (
+    __version__,
+    diagnostics,
+    identity,
+    project_context,
+    project_resolver,
+    publishing,
+    storage,
+    tools,
+)
 from .config import AppSettings
 from .runtime import AppContext
 
@@ -97,7 +106,7 @@ def create_app(context: AppContext | None = None) -> FastAPI:
 
     app = FastAPI(
         title="librechat-personal-files-mcp",
-        version="1.0.0",
+        version=__version__,
         lifespan=lifespan,
     )
     app.state.app_context = ctx
@@ -789,36 +798,47 @@ def register_mcp_tools(mcp: FastMCP) -> None:
             limit: number of results to return (1..50).
             project_id: optional project ID to restrict search.
             scope: search scope ('auto', 'project', 'personal', 'all').
-                   Defaults to 'auto' (scoped to active project if in a project conversation,
-                   otherwise searches all user documents).
+                   'auto' (default) searches the active project of this conversation,
+                   or all documents only when the conversation is confirmed to have
+                   no project. If the project cannot be determined, 'auto' returns
+                   project_resolution_failed instead of widening the search.
         """
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
 
-        request = ctx.request_context.request
-        req_ctx = project_context.get_request_context()
-        conv_id = getattr(request.state, "conversation_id", None)
-        if req_ctx and req_ctx.conversation_id:
-            conv_id = conv_id or req_ctx.conversation_id
+        resolver_status: str | None = None
+        retry_recommended = False
+        if not project_id and scope in ("auto", "project"):
+            request = ctx.request_context.request
+            req_ctx = project_context.get_request_context()
+            conv_id = getattr(request.state, "conversation_id", None)
+            if req_ctx and req_ctx.conversation_id:
+                conv_id = conv_id or req_ctx.conversation_id
+            resolver = getattr(app_ctx, "project_resolver", None)
+            if resolver is None:
+                resolver_status = "resolver_unavailable"
+            else:
+                res = await resolver.resolve(
+                    app_ctx.settings,
+                    user_id=uid,
+                    conversation_id=conv_id,
+                    conv_status=getattr(request.state, "conversation_status", "valid"),
+                    request_id=getattr(request.state, "request_id", ""),
+                )
+                resolver_status = res.status
+                retry_recommended = res.retry_recommended
+                if res.status == "project":
+                    project_id = res.project_id
 
-        if not project_id and conv_id and getattr(app_ctx, "project_resolver", None):
-            res = await app_ctx.project_resolver.resolve(
-                app_ctx.settings,
-                user_id=uid,
-                conversation_id=conv_id,
-                conv_status=getattr(request.state, "conversation_status", "valid"),
-                request_id=getattr(request.state, "request_id", ""),
-            )
-            if res.status == "project":
-                project_id = res.project_id
-
-        return tools.search_knowledge(
+        return await tools.search_knowledge(
             app_ctx.storage_cfg,
             uid,
             query,
             limit=limit,
             project_id=project_id,
             scope=scope,
+            resolver_status=resolver_status,
+            retry_recommended=retry_recommended,
         )
 
     @mcp.tool()

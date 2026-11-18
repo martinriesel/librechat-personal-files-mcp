@@ -146,3 +146,15 @@ way they are.
 ## D034 — `list_projects` combines MongoDB and disk state
 **Decision:** `list_projects` queries `chatprojects` from MongoDB (filtered by `{"user": user_id}`) and also scans `projects/` on disk. Projects found on disk but not in MongoDB are reported with `source: "disk_only"`. Each project entry includes `doc_count` and `indexed_count` from its catalog.
 **Reason:** A project may exist in MongoDB but have no local documents (yet), or local documents may exist for a project ID that the user no longer owns in LibreChat. Combining both sources gives the LLM a complete picture for reconciliation decisions.
+
+## D035 — Async tools never call `asyncio.run`
+**Decision:** RAG calls from async MCP tools (`search_knowledge`) use `await _arun_rag(...)`, which creates and closes a `RagClient` in the server's event loop. Sync tools keep `_run_rag(...)`, which is safe because FastMCP runs sync tools in a worker thread without a running loop; `_run_rag` raises an explicit error if called from a running loop. Async tools are tested through the real HTTP → FastMCP transport, not only by calling `tools.*` directly. `nest_asyncio` is not used.
+**Reason:** 1.4.0-test failed in production with `asyncio.run() cannot be called from a running event loop`; unit tests called the function outside any loop and missed it.
+
+## D036 — `search_knowledge(scope="auto")` is fail-closed
+**Decision:** `auto` resolves to `project` when the conversation has a project, and to `all` only when the resolver returns `no_project`. Every other resolver status returns `ERROR: project_resolution_failed` with `resolver_status` and `retry_recommended`, and `rag_api` is not queried. Explicit scopes (`all`, `personal`, `project` + `project_id`) do not consult the resolver.
+**Reason:** Same rule as D029 for saving: a resolver failure is not proof of "no project", and must not silently widen a project-scoped search to every document.
+
+## D037 — One project-membership rule for all tools
+**Decision:** `docindex.effective_project_id(entry, catalog)` = `entry.project_id` if set, otherwise the `<id>` of a `projects/<id>/` catalog, otherwise none. `list_documents_with_catalog()` applies it across the project, `docs/` and legacy root catalogs, and is used by `list_projects`, `get_project_context`, `list_documentation`, `search_knowledge` and `index_batch`. Results expose the source `catalog` (`project`/`general`/`legacy`). Nothing is migrated.
+**Reason:** `list_projects` counted only the project catalog while `get_project_context` also counted the legacy root catalog, so the same project showed 5 and 6 documents; documents in `docs/` linked by metadata were invisible to project search.

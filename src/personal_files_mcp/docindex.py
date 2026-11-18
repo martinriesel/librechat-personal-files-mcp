@@ -197,6 +197,26 @@ class DocIndex:
     def path(self) -> Path:
         return self._index_path
 
+    @property
+    def scope_dir(self) -> str | None:
+        return self._scope_dir
+
+    @property
+    def project_scope(self) -> str | None:
+        """Project ID when this is a ``projects/<id>`` catalog, else ``None``."""
+        if self._scope_dir and self._scope_dir.startswith("projects/"):
+            return self._scope_dir.split("/", 1)[1] or None
+        return None
+
+    @property
+    def label(self) -> str:
+        """Catalog kind: ``project``, ``general`` (docs/) or ``legacy`` (root)."""
+        if self.project_scope:
+            return "project"
+        if self._scope_dir == "docs":
+            return "general"
+        return "legacy"
+
     # ------------------------------------------------------------------ IO
 
     def _read(self) -> IndexData:
@@ -459,49 +479,64 @@ def find_document_across_catalogs(
     return None, None
 
 
+def effective_project_id(entry: DocumentEntry, cat: DocIndex) -> str | None:
+    """Project a document belongs to.
+
+    The explicit ``project_id`` metadata wins; otherwise a document stored in a
+    ``projects/<id>/`` catalog belongs to ``<id>``. Documents in ``docs/`` or the
+    legacy root catalog without ``project_id`` are unassigned (personal).
+    """
+    return entry.project_id or cat.project_scope
+
+
+def iter_all_documents(
+    cfg: storage.StorageConfig, user_id: str
+) -> list[tuple[DocumentEntry, DocIndex]]:
+    """All catalog entries with their catalog, de-duplicated by ``doc_id``."""
+    seen: set[str] = set()
+    result: list[tuple[DocumentEntry, DocIndex]] = []
+    for cat in get_all_catalogs(cfg, user_id):
+        for d in cat.list_documents():
+            if d.doc_id not in seen:
+                seen.add(d.doc_id)
+                result.append((d, cat))
+    return result
+
+
+def list_documents_with_catalog(
+    cfg: storage.StorageConfig,
+    user_id: str,
+    project_id: str | None = None,
+    unassigned_only: bool = False,
+) -> list[tuple[DocumentEntry, DocIndex]]:
+    """Single source of truth for project membership across ALL catalogs.
+
+    * ``project_id`` given: every entry whose :func:`effective_project_id`
+      equals it, whether it lives in ``projects/<id>/``, ``docs/`` or the
+      legacy root catalog.
+    * ``unassigned_only``: entries with no effective project.
+    * otherwise: everything.
+    """
+    pairs = iter_all_documents(cfg, user_id)
+    if project_id:
+        return [(d, c) for d, c in pairs if effective_project_id(d, c) == project_id]
+    if unassigned_only:
+        return [(d, c) for d, c in pairs if not effective_project_id(d, c)]
+    return pairs
+
+
 def list_all_documents(
     cfg: storage.StorageConfig,
     user_id: str,
     project_id: str | None = None,
     unassigned_only: bool = False,
 ) -> list[DocumentEntry]:
-    seen: set[str] = set()
-    result: list[DocumentEntry] = []
-
-    if project_id:
-        p_cat = get_project_catalog(cfg, user_id, project_id)
-        for d in p_cat.list_documents():
-            if d.doc_id not in seen:
-                seen.add(d.doc_id)
-                result.append(d)
-        root_cat = DocIndex(cfg, user_id, scope_dir=None)
-        if root_cat.path.exists():
-            for d in root_cat.list_documents(project_id=project_id):
-                if d.doc_id not in seen:
-                    seen.add(d.doc_id)
-                    result.append(d)
-        return result
-
-    if unassigned_only:
-        g_cat = get_general_catalog(cfg, user_id)
-        for d in g_cat.list_documents(unassigned_only=True):
-            if d.doc_id not in seen:
-                seen.add(d.doc_id)
-                result.append(d)
-        root_cat = DocIndex(cfg, user_id, scope_dir=None)
-        if root_cat.path.exists():
-            for d in root_cat.list_documents(unassigned_only=True):
-                if d.doc_id not in seen:
-                    seen.add(d.doc_id)
-                    result.append(d)
-        return result
-
-    for cat in get_all_catalogs(cfg, user_id):
-        for d in cat.list_documents():
-            if d.doc_id not in seen:
-                seen.add(d.doc_id)
-                result.append(d)
-    return result
+    return [
+        d
+        for d, _ in list_documents_with_catalog(
+            cfg, user_id, project_id=project_id, unassigned_only=unassigned_only
+        )
+    ]
 
 
 def all_files(index: DocIndex) -> Iterable[str]:

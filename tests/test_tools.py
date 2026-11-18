@@ -383,7 +383,7 @@ def test_list_documentation(cfg):
     assert p_tag["documents"][0]["file"] == "projects/proj_1/doc1.md"
 
 
-def test_search_knowledge_project_scoping(cfg, monkeypatch):
+async def test_search_knowledge_project_scoping(cfg, monkeypatch):
     from unittest.mock import AsyncMock, MagicMock
 
     from personal_files_mcp import docindex
@@ -417,16 +417,16 @@ def test_search_knowledge_project_scoping(cfg, monkeypatch):
     )
 
     # 1. Searching for proj_3 (which has no docs) returns early with 0 results
-    out_empty = tools.search_knowledge(cfg, USER, "hello", project_id="proj_3")
+    out_empty = await tools.search_knowledge(cfg, USER, "hello", project_id="proj_3")
     p_empty = _ok_payload(out_empty)
     assert p_empty["count"] == 0
     assert p_empty["scope"] == "project"
     assert "no indexed documents for project 'proj_3'" in p_empty["note"]
 
-    # 2. Mock _run_rag and verify that searching proj_1 only passes rag-proj1
+    # 2. Mock _arun_rag and verify that searching proj_1 only passes rag-proj1
     captured_file_ids = []
 
-    def mock_run_rag(ctx, coro_factory):
+    async def mock_arun_rag(ctx, coro_factory):
         mock_client = MagicMock()
 
         async def fake_query_multiple(uid, q, fids, lim):
@@ -434,17 +434,11 @@ def test_search_knowledge_project_scoping(cfg, monkeypatch):
             return [{"text": "match"}]
 
         mock_client.query_multiple = AsyncMock(side_effect=fake_query_multiple)
+        return await coro_factory(mock_client)
 
-        import asyncio
+    monkeypatch.setattr(tools, "_arun_rag", mock_arun_rag)
 
-        async def run_coro():
-            return await coro_factory(mock_client)
-
-        return asyncio.run(run_coro())
-
-    monkeypatch.setattr(tools, "_run_rag", mock_run_rag)
-
-    out_p1 = tools.search_knowledge(cfg, USER, "query text", project_id="proj_1")
+    out_p1 = await tools.search_knowledge(cfg, USER, "query text", project_id="proj_1")
     p_p1 = _ok_payload(out_p1)
     assert p_p1["count"] == 1
     assert p_p1["scope"] == "project"

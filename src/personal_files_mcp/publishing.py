@@ -211,28 +211,34 @@ class LinkRegistry:
             return None
         return _row_to_record(row)
 
-    def revoke(self, user_id: str, token_or_path: str) -> bool:
+    def revoke(self, user_id: str, token_or_path: str) -> list[str]:
+        """Revoke active links matching a token OR a relative path.
+
+        Returns the relative paths whose links were revoked (empty if none).
+        A token is tried first, then the value is treated as a path, so
+        root-level files (paths without ``/``) can be unpublished by path too.
+        """
         now = datetime.now(UTC).isoformat()
         with self._conn() as conn:
-            if "/" in token_or_path:
-                cursor = conn.execute(
-                    """
-                    UPDATE public_links
-                    SET revoked_at = ?
-                    WHERE user_id = ? AND relative_path = ? AND revoked_at IS NULL
-                    """,
-                    (now, user_id, token_or_path),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    UPDATE public_links
-                    SET revoked_at = ?
-                    WHERE user_id = ? AND token = ? AND revoked_at IS NULL
-                    """,
-                    (now, user_id, token_or_path),
-                )
-            return cursor.rowcount > 0
+            for column in ("token", "relative_path"):
+                rows = conn.execute(
+                    f"""
+                    SELECT relative_path FROM public_links
+                    WHERE user_id = ? AND {column} = ? AND revoked_at IS NULL
+                    """,  # noqa: S608 - column is from a fixed tuple
+                    (user_id, token_or_path),
+                ).fetchall()
+                if rows:
+                    conn.execute(
+                        f"""
+                        UPDATE public_links
+                        SET revoked_at = ?
+                        WHERE user_id = ? AND {column} = ? AND revoked_at IS NULL
+                        """,  # noqa: S608
+                        (now, user_id, token_or_path),
+                    )
+                    return sorted({r["relative_path"] for r in rows})
+        return []
 
     def touch(self, token: str) -> None:
         now = datetime.now(UTC).isoformat()
@@ -349,19 +355,10 @@ def unpublish(
     ctx: AppContext, user_id: str, path_or_token: str
 ) -> bool:
     """Revoke a link. Returns True if a link was revoked."""
-    revoked = get_registry(ctx).revoke(user_id, path_or_token)
-    if revoked:
-        # docindex sync is best-effort: find the entry and clear flags.
-        try:
-            from . import docindex
-            idx = docindex.new_docindex(ctx.storage_cfg, user_id)
-            for entry in idx.list_documents():
-                if entry.file == path_or_token or entry.public_token == path_or_token:
-                    idx.set_public(entry.file, False, None)
-                    break
-        except storage.StorageError:
-            pass
-    return revoked
+    revoked_paths = get_registry(ctx).revoke(user_id, path_or_token)
+    for rel in revoked_paths:
+        _set_catalog_public(ctx, user_id, rel, False, None)
+    return bool(revoked_paths)
 
 
 def list_links(ctx: AppContext, user_id: str) -> list[LinkRecord]:
@@ -385,16 +382,31 @@ def public_url(ctx: AppContext, record: LinkRecord) -> str:
 def _sync_docindex(
     ctx: AppContext, user_id: str, rel: str, record: LinkRecord
 ) -> None:
+    _set_catalog_public(ctx, user_id, rel, True, record.token)
+
+
+def _set_catalog_public(
+    ctx: AppContext, user_id: str, rel: str, public: bool, token: str | None
+) -> None:
+    """Mirror the link state into the catalog entry for ``rel``, if any.
+
+    Looks the entry up across ALL catalogs (``projects/<id>/``, ``docs/``,
+    legacy root) by exact path. Files that are not catalogued documents (e.g.
+    a published PDF) are left alone: no catalog file is created for them.
+    Best-effort: the link registry is the source of truth for downloads.
+    """
     try:
         from . import docindex
-        idx = docindex.new_docindex(ctx.storage_cfg, user_id)
-        entry = idx.get(rel)
-        if entry is None:
-            entry = docindex.DocumentEntry(file=rel)
-        idx.set_public(rel, True, record.token)
-    except storage.StorageError:
-        # docindex sync is best-effort; surface warning but do not raise
-        logger.warning("docindex sync failed for published %s", rel)
+
+        for cat in docindex.get_all_catalogs(ctx.storage_cfg, user_id):
+            if not cat.path.exists():
+                continue
+            entry = next((d for d in cat.list_documents() if d.file == rel), None)
+            if entry is not None:
+                cat.set_public(entry.file, public, token)
+                return
+    except (storage.StorageError, OSError) as exc:
+        logger.warning("docindex public-flag sync failed for %s: %s", rel, exc)
 
 
 # ---------------------------------------------------------------------------

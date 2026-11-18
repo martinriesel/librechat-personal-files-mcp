@@ -103,24 +103,40 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _run_rag(ctx, coro_factory):
-    """Run a RAG operation in a single event loop with a single client.
+async def _arun_rag(ctx, coro_factory):
+    """Async variant of :func:`_run_rag` for tools running inside the event loop.
 
-    The ``httpx.AsyncClient`` inside ``RagClient`` is bound to the event loop it
-    was created in. Reusing it across multiple ``asyncio.run()`` calls raises
-    ``RuntimeError: Event loop is closed``. This helper creates the client,
-    runs the factory-provided coroutine, and closes the client within one loop.
+    Creates a ``RagClient`` bound to the *current* loop, awaits the
+    factory-provided coroutine and always closes the client.
     """
     from . import rag_client
 
-    async def wrapper():
-        client = rag_client.RagClient(ctx.settings)
-        try:
-            return await coro_factory(client)
-        finally:
-            await client.close()
+    client = rag_client.RagClient(ctx.settings)
+    try:
+        return await coro_factory(client)
+    finally:
+        await client.close()
 
-    return asyncio.run(wrapper())
+
+def _run_rag(ctx, coro_factory):
+    """Run a RAG operation from SYNCHRONOUS code in a private event loop.
+
+    Sync MCP tools are executed by FastMCP in a worker thread, where no event
+    loop is running, so ``asyncio.run`` is safe there. Async tools (running on
+    the server loop) must use :func:`_arun_rag` instead; calling this helper
+    from a running loop raises a clear error instead of the opaque
+    ``asyncio.run() cannot be called from a running event loop``.
+
+    The ``httpx.AsyncClient`` inside ``RagClient`` is bound to the loop it was
+    created in, so client creation, use and close happen in one loop.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_arun_rag(ctx, coro_factory))
+    raise RuntimeError(
+        "_run_rag called from a running event loop; use 'await _arun_rag(...)'"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -658,16 +674,20 @@ def list_documentation(
     unassigned_only: bool = False,
 ) -> str:
     """List documentation catalog entries for the user, with optional filtering."""
-    docs = docindex.list_all_documents(
+    pairs = docindex.list_documents_with_catalog(
         cfg, user_id, project_id=project_id, unassigned_only=unassigned_only
     )
     if tag:
         tag_lower = tag.lower()
-        docs = [d for d in docs if any(t.lower() == tag_lower for t in d.tags)]
+        pairs = [
+            (d, c) for d, c in pairs if any(t.lower() == tag_lower for t in d.tags)
+        ]
 
     doc_dicts = []
-    for d in docs:
+    for d, cat in pairs:
         item = d.to_dict()
+        item["catalog"] = cat.label
+        item["effective_project_id"] = docindex.effective_project_id(d, cat)
         item["modified_since_indexing"] = _is_modified_since_indexing(cfg, user_id, d)
         doc_dicts.append(item)
 
@@ -835,6 +855,12 @@ def transfer_documentation(
         )
 
     if dry_run:
+        has_link = entry.public
+        with contextlib.suppress(Exception):
+            from . import publishing
+
+            rec = publishing.get_link(_resolve_publish_ctx(cfg), user_id, src_path)
+            has_link = rec is not None and not rec.is_revoked() and not rec.is_expired(_now())
         return _ok(
             {
                 "dry_run": True,
@@ -844,7 +870,7 @@ def transfer_documentation(
                 "source_project_id": entry.project_id,
                 "target_project_id": target_project_id,
                 "can_transfer": True,
-                "public_link": entry.public,
+                "public_link": has_link,
                 "rag_indexed": entry.rag_indexed,
             }
         )
@@ -855,12 +881,14 @@ def transfer_documentation(
     except storage.StorageError as exc:
         return _err("move_failed", str(exc))
 
-    # Update public link in publishing registry if present
+    # Update public link in publishing registry if present (the registry, not
+    # the catalog flag, is the source of truth for the download token).
+    link_moved = False
     with contextlib.suppress(Exception):
         ctx = _resolve_publish_ctx(cfg)
         from . import publishing
 
-        publishing.update_link_path(ctx, user_id, src_path, dst_path)
+        link_moved = publishing.update_link_path(ctx, user_id, src_path, dst_path)
 
     # Update catalogs
     src_cat.remove(src_path)
@@ -881,7 +909,7 @@ def transfer_documentation(
             "target_file": dst_path,
             "source_project_id": entry.project_id,
             "target_project_id": target_project_id,
-            "public_link_preserved": updated_entry.public,
+            "public_link_preserved": link_moved,
             "rag_preserved": updated_entry.rag_indexed,
         }
     )
@@ -1103,21 +1131,39 @@ def list_public_links(
 # ---------------------------------------------------------------------------
 
 
-def search_knowledge(
+SEARCH_SCOPES = ("auto", "project", "personal", "all")
+
+
+async def search_knowledge(
     cfg: storage.StorageConfig,
     user_id: str,
     query: str,
     limit: int = 8,
     project_id: str | None = None,
     scope: str = "auto",
+    resolver_status: str | None = None,
+    retry_recommended: bool = False,
 ) -> str:
+    """Semantic search with project scoping (async: runs on the server loop).
+
+    ``project_id`` is either supplied explicitly or already resolved by the
+    caller from the conversation context. ``resolver_status`` is the status
+    returned by ``ProjectResolver.resolve`` (``None`` when no resolution was
+    attempted).
+
+    ``scope="auto"`` is fail-closed: it only widens to ``all`` when the
+    resolver PROVED the conversation has no project (``no_project``). Any
+    other outcome (timeout, unpersisted first turn, missing/invalid header)
+    returns ``project_resolution_failed`` instead of silently searching every
+    document.
+    """
     from . import rag_client
 
     if not isinstance(query, str) or not query.strip():
         return _err("invalid_query", "query must be a non-empty string")
     if not isinstance(limit, int) or limit < 1 or limit > 50:
         return _err("invalid_limit", "limit must be 1..50")
-    if scope not in ("auto", "project", "personal", "all"):
+    if scope not in SEARCH_SCOPES:
         return _err("invalid_scope", f"unknown scope: {scope!r}")
     try:
         ctx = _resolve_publish_ctx(cfg)
@@ -1126,18 +1172,30 @@ def search_knowledge(
     if not ctx.settings.jwt_secret_usable():
         return _err("rag_disabled", "JWT_SECRET not configured or too short")
 
-    req_ctx = project_context.get_request_context()
-    resolved_proj_id = project_id or (req_ctx.project_id if req_ctx else None)
+    resolved_proj_id = project_id
 
     effective_scope = scope
     if effective_scope == "auto":
-        effective_scope = "project" if resolved_proj_id else "all"
+        if resolved_proj_id:
+            effective_scope = "project"
+        elif resolver_status == "no_project":
+            effective_scope = "all"
+        else:
+            return _err(
+                "project_resolution_failed",
+                f"Project resolution status '{resolver_status or 'not_resolved'}': "
+                "cannot determine search scope safely. Retry, or call again with "
+                "an explicit scope ('project' with project_id, 'personal' or 'all').",
+                resolver_status=resolver_status or "not_resolved",
+                retry_recommended=retry_recommended,
+            )
 
     if effective_scope == "project":
         if not resolved_proj_id:
             return _err(
                 "missing_project",
                 "project scope requires project_id or active project context",
+                resolver_status=resolver_status,
             )
         docs = docindex.list_all_documents(
             cfg, user_id, project_id=resolved_proj_id
@@ -1174,7 +1232,7 @@ def search_knowledge(
         return await client.query_multiple(user_id, query, file_ids, limit)
 
     try:
-        results = _run_rag(ctx, flow)
+        results = await _arun_rag(ctx, flow)
     except rag_client.RagError as exc:
         return _err("rag_failed", str(exc))
     return _ok(
@@ -1515,6 +1573,16 @@ def _extract_title_description(content: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _count_by_catalog(
+    pairs: list[tuple[docindex.DocumentEntry, docindex.DocIndex]],
+) -> dict[str, int]:
+    """Count documents per catalog kind (project / general / legacy)."""
+    counts: dict[str, int] = {}
+    for _, cat in pairs:
+        counts[cat.label] = counts.get(cat.label, 0) + 1
+    return counts
+
+
 async def list_projects(app_ctx: Any, user_id: str) -> str:
     """List all authorized projects for user with document counts."""
     projects_map: dict[str, dict[str, Any]] = {}
@@ -1545,13 +1613,32 @@ async def list_projects(app_ctx: Any, user_id: str) -> str:
                         "source": "storage",
                     }
 
+    # Same membership rule as get_project_context / list_documentation /
+    # search_knowledge(scope=project): see docindex.effective_project_id.
+    by_project: dict[str, list[tuple[docindex.DocumentEntry, docindex.DocIndex]]] = {}
+    for d, cat in docindex.iter_all_documents(app_ctx.storage_cfg, user_id):
+        pid = docindex.effective_project_id(d, cat)
+        if pid:
+            by_project.setdefault(pid, []).append((d, cat))
+
+    for pid in by_project:
+        if pid not in projects_map:
+            projects_map[pid] = {
+                "id": pid,
+                "name": next(
+                    (d.project_name for d, _ in by_project[pid] if d.project_name), pid
+                ),
+                "description": "",
+                "source": "catalog",
+            }
+
     for pid, pdata in projects_map.items():
-        p_cat = docindex.get_project_catalog(app_ctx.storage_cfg, user_id, pid)
-        p_docs = p_cat.list_documents()
-        pdata["documents_count"] = len(p_docs)
+        pairs = by_project.get(pid, [])
+        pdata["documents_count"] = len(pairs)
         pdata["indexed_count"] = sum(
-            1 for d in p_docs if d.indexing_status == "indexed"
+            1 for d, _ in pairs if d.indexing_status == "indexed"
         )
+        pdata["documents_by_catalog"] = _count_by_catalog(pairs)
 
     projs_list = list(projects_map.values())
     return _ok(
@@ -1588,16 +1675,19 @@ async def get_project_context(
     )
     res_dict = res.as_dict(conversation_id)
     if res.status == "project" and res.project_id:
-        proj_docs = docindex.list_all_documents(
+        pairs = docindex.list_documents_with_catalog(
             app_ctx.storage_cfg, user_id, project_id=res.project_id
         )
-        res_dict["project"]["documents_count"] = len(proj_docs)
+        res_dict["project"]["documents_count"] = len(pairs)
+        res_dict["project"]["documents_by_catalog"] = _count_by_catalog(pairs)
         doc_list = []
         summary_file = None
-        for d in proj_docs:
+        for d, cat in pairs:
             doc_list.append(
                 {
+                    "doc_id": d.doc_id,
                     "file": d.file,
+                    "catalog": cat.label,
                     "title": d.title,
                     "description": d.description,
                     "tags": d.tags,

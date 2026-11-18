@@ -77,8 +77,41 @@ def test_registry_revoke_by_path(ctx):
         size_bytes=None,
         ttl=None,
     )
-    assert reg.revoke(USER_A, "docs/a.md") is True
+    assert reg.revoke(USER_A, "docs/a.md") == ["docs/a.md"]
     assert reg.get(rec.token).is_revoked() is True
+    # Second revoke is a no-op
+    assert reg.revoke(USER_A, "docs/a.md") == []
+
+
+def test_registry_revoke_root_level_path(ctx):
+    """Paths without '/' used to be treated only as tokens and never revoked."""
+    reg = publishing.get_registry(ctx)
+    rec = reg.create_link(
+        user_id=USER_A,
+        relative_path="report.pdf",
+        filename="report.pdf",
+        mime_type=None,
+        size_bytes=None,
+        ttl=None,
+    )
+    assert reg.revoke(USER_A, "report.pdf") == ["report.pdf"]
+    assert reg.get(rec.token).is_revoked() is True
+
+
+def test_registry_revoke_by_token_and_other_user(ctx):
+    reg = publishing.get_registry(ctx)
+    rec = reg.create_link(
+        user_id=USER_A,
+        relative_path="docs/b.md",
+        filename="b.md",
+        mime_type=None,
+        size_bytes=None,
+        ttl=None,
+    )
+    # Another user cannot revoke it, by token or path
+    assert reg.revoke(USER_B, rec.token) == []
+    assert reg.revoke(USER_B, "docs/b.md") == []
+    assert reg.revoke(USER_A, rec.token) == ["docs/b.md"]
 
 
 def test_registry_purge_expired(ctx):

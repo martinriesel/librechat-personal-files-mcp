@@ -9,10 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.5.0-test] — 2026-11-18
+
+Fixes found while validating 1.4.0-test from LibreChat.
+
+### Fixed
+- **`search_knowledge` failed with `asyncio.run() cannot be called from a running event loop`.**
+  The MCP tool is async but called a sync helper that used `asyncio.run()`. `tools.search_knowledge`
+  is now `async` and awaits the new `_arun_rag()`. `_run_rag()` remains for sync tools (they run in a
+  worker thread) and now raises a clear error if misused from a running loop. Covered by tests that
+  call the tool through the real HTTP → FastMCP transport (D035).
+- **`search_knowledge(scope="auto")` no longer widens to all documents when project resolution
+  fails.** It only searches everything when the resolver confirms `no_project`; any other status
+  (`resolver_unavailable`, `conversation_unavailable`, `project_unavailable`, `context_invalid`,
+  `context_missing`) returns `project_resolution_failed` with `resolver_status` and
+  `retry_recommended`, without querying `rag_api`. Explicit `all`, `personal` or
+  `project` + `project_id` still work without the resolver (D036).
+- **Project document counts were inconsistent** (`list_projects` 5 vs `get_project_context` 6 for the
+  same project). Every tool now uses one membership rule (`docindex.effective_project_id`): explicit
+  `project_id` metadata, otherwise the `projects/<id>/` catalog the entry lives in, across the project,
+  `docs/` and legacy root catalogs (D037).
+- **`publish_file` / `unpublish_file` updated the legacy root catalog** (creating it as a side effect)
+  instead of the document's real catalog. The public flag is now synced in whichever catalog holds the
+  entry; non-document files no longer create catalog entries.
+- **`unpublish_file` could not revoke root-level files by path** (paths without `/` were treated only as
+  tokens). Tokens are tried first, then paths.
+- **`transfer_documentation` always reported `public_link_preserved: false`.** It now reports whether
+  an active link was actually moved; the dry run reports `public_link` from the link registry.
+
 ### Added
-- **`CHANGELOG.md`** — this file.
-- **Diagnostic & deployment docs** — `docs/mongodb-permissions-dokploy.md`, `docs/diagnostics-and-logs.md`.
-- **Technical decisions** — DECISIONS.md entries D028–D034 covering multi-scope catalogs, fail-closed routing, catalog protection, stable `doc_id`, transfer & reconciliation, batch indexing, and `list_projects`.
+- `list_documentation` entries include `catalog` (`project` / `general` / `legacy`) and
+  `effective_project_id`.
+- `list_projects` and `get_project_context` include `documents_by_catalog`; `get_project_context`
+  documents include `doc_id` and `catalog`. Projects referenced only by catalog metadata are listed
+  with `source: "catalog"`.
+- `tests/test_v150_regressions.py` (24 tests).
+
+### Changed
+- `search_knowledge(scope="personal")` and `list_documentation(unassigned_only=true)` exclude
+  documents linked to a project by metadata, including those stored in `docs/`.
+- Version reported by `pyproject.toml`, FastAPI and `/healthz` is now `1.5.0` (was `1.0.0`).
+
+### Documentation
+- **`CHANGELOG.md`**, `docs/mongodb-permissions-dokploy.md`, `docs/diagnostics-and-logs.md`, and
+  DECISIONS.md D028–D037.
 
 ---
 

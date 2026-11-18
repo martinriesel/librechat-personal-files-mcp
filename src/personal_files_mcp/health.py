@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 
+from . import __version__
 from .app import AppContext
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ async def healthz_handler(ctx: AppContext) -> dict:
         "rag": rag_status,
         "storage": storage_status,
         "jwt_configured": jwt_ok,
-        "version": "1.0.0",
+        "version": __version__,
     }
 
 
