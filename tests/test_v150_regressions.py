@@ -31,10 +31,10 @@ from personal_files_mcp.config import AppSettings
 from personal_files_mcp.project_resolver import ProjectResolutionResult
 
 USER = "5f8d3a4b2c1e0d0001a2b3c4"
-OTHER_USER = "aaaaaaaaaaaaaaaaaaaaaaaa"
-PROJ_A = "6ac28d9c1187b1354a1f51b4"
-PROJ_B = "6ac28d9c1187b1354a1f51b5"
-CONV = "96d73b4b-2510-5e18-9612-ccc2dcbedd76"
+OTHER_USER = "bbbbbbbbbbbbbbbbbbbbbbbb"
+PROJ_A = "aaaaaaaaaaaaaaaaaaaaaa01"
+PROJ_B = "aaaaaaaaaaaaaaaaaaaaaa02"
+CONV = "00000000-0000-4000-8000-000000000001"
 RAG = "http://rag.test"
 
 
@@ -70,7 +70,7 @@ def _resolver(status: str, project_id: str | None = None, retry: bool = False):
         return_value=ProjectResolutionResult(
             status=status,
             project_id=project_id,
-            project_name="Locaweb" if project_id else None,
+            project_name="Project Alpha" if project_id else None,
             retry_recommended=retry,
         )
     )
@@ -318,7 +318,7 @@ def test_run_rag_refuses_running_loop(settings):
 async def test_list_projects_and_context_counts_match(settings):
     resolver = _resolver("project", PROJ_A)
     resolver.list_user_projects = AsyncMock(
-        return_value=[{"id": PROJ_A, "name": "Locaweb", "description": ""}]
+        return_value=[{"id": PROJ_A, "name": "Project Alpha", "description": ""}]
     )
     ctx = _make_ctx(settings, resolver)
     cfg = ctx.storage_cfg

@@ -15,6 +15,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Fixes found while validating 1.4.0-test from LibreChat.
 
+### Validated in a LibreChat deployment
+- `/healthz` reported `version: "1.5.0"`, `status: "ok"`, `rag: "available"`, `storage: "ok"`.
+- `search_knowledge` with `scope="auto"` and no `project_id`: each conversation resolved its own
+  project (two projects tested).
+- **Bidirectional isolation** with both projects holding indexed documents: a search from each project
+  returned its own document and never the other project's document, compared by `rag_file_id`, not only
+  by result text.
+- The `asyncio.run() cannot be called from a running event loop` error did not reappear.
+
+Not covered by that validation (neither passed nor failed): explicit `project_id` searches,
+`documents_by_catalog` comparison between `list_projects` and `get_project_context`, multi-document
+`index_batch`, and opening the same public link after `transfer_documentation`. These are covered by the
+automated test suite only.
+
+### Known limitations (still open)
+- `project_id` passed by the model to `save_documentation` / `transfer_documentation` is not checked
+  against the user's LibreChat projects.
+- Public downloads check the path and then reopen it (check-then-open window); no rate limiting is
+  applied by the server itself; expired links are only purged lazily.
+- `reconcile_documentation` scans only the top level of `docs/` and `projects/<id>/`.
+- Moving or deleting a whole directory does not update catalog entries of the files inside it.
+- MCP tools read the identity from `X-User-Id` regardless of `USER_HEADER`.
+- RAG network errors (e.g. DNS) are surfaced as raw errors instead of `rag_failed`.
+
+This release was validated functionally; it is not a security audit.
+
 ### Fixed
 - **`search_knowledge` failed with `asyncio.run() cannot be called from a running event loop`.**
   The MCP tool is async but called a sync helper that used `asyncio.run()`. `tools.search_knowledge`

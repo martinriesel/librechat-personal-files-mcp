@@ -47,11 +47,13 @@ MCP server providing per-user personal file storage, persistent documentation, R
 
 ### 1. Get the Docker image
 
-Pull the pre-built image from GHCR:
+Pull a pre-built image from GHCR, pinning an explicit tag:
 
 ```bash
-docker pull ghcr.io/martinriesel/librechat-personal-files-mcp:latest
+docker pull ghcr.io/martinriesel/librechat-personal-files-mcp:<tag>
 ```
+
+Images are built by CI from `v*` git tags (published as the tag without the `v`, e.g. `v1.5.0-test` → `1.5.0-test`) and from `main` (`main` / `latest`). Check the [package page](https://github.com/martinriesel/librechat-personal-files-mcp/pkgs/container/librechat-personal-files-mcp) for the available tags. `latest` follows `main` and may lag behind the newest tagged version.
 
 Or build it yourself:
 
@@ -61,18 +63,18 @@ cd librechat-personal-files-mcp
 docker build -t librechat-personal-files-mcp .
 ```
 
-### 2. Prepare the host (run once, as root)
+### 2. Prepare storage
 
-Create the data directory and a shared group. The container runs as UID `2000` / GID `2500`; Nginx (which serves published files) needs read access.
+The container runs as UID `2000` / GID `2500`. Published files are streamed by the MCP container itself, so the reverse proxy does **not** need access to the data directory.
+
+The compose snippet uses **named volumes**; Docker initializes them from the image with the correct ownership, so no host preparation is needed. If you prefer **bind mounts** instead, create the directories once (as root):
 
 ```bash
 cd /path/to/your/librechat
 groupadd -g 2500 lcfiles 2>/dev/null || true
 mkdir -p ./data/private/_system
 chown -R 2000:2500 ./data/private
-chmod 2771 ./data/private          # group rwx + setgid; world executable so nginx can traverse
-setfacl -R -m g:2500:rX,d:g:2500:rX ./data/private 2>/dev/null || \
-  echo "ACL tools absent; using 644/755 fallback"
+chmod 2770 ./data/private          # group rwx + setgid; no world access needed
 ```
 
 Ensure `JWT_SECRET` is set in your LibreChat `.env` (same value must be shared with `rag_api`):
@@ -83,11 +85,13 @@ grep -q '^JWT_SECRET=' .env || echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
 
 ### 3. Add the service to your compose file
 
-Add the service block from `docker-compose.snippet.yml` to your `docker-compose.override.yml`:
+Add the service block from `docker-compose.snippet.yml` to your `docker-compose.override.yml` (or paste it into a Dokploy Compose application):
 
 - A `librechat-personal-files` service (image, environment, volumes, networks).
 
-Set `PUBLIC_BASE_URL` to your own public URL, e.g. `https://chat.example.com/files`.
+Set `PUBLIC_BASE_URL` to your own public URL, e.g. `https://chat.example.com/files`, replace `<tag>` with an existing image tag and `<shared-network>` with a Docker network that also contains `rag_api` and MongoDB (and your reverse proxy), so their hostnames resolve from inside this container. Secrets (`JWT_SECRET`, `PERSONAL_FILES_SERVICE_TOKEN` → `SERVICE_TOKEN`, `LIBRECHAT_MONGO_URI`) come from your environment / `.env`, never from the compose file.
+
+After deploying, check from inside the container that `rag_api` is reachable: `/healthz` should report `"rag": "available"`. A `Temporary failure in name resolution` error from the RAG tools means the containers do not share a network.
 
 Then start it:
 
@@ -256,6 +260,24 @@ Tools:
 - `index_batch(doc_ids?, project_id?, only_pending=false, only_modified=false)` — batch indexes multiple candidate documents (selected, pending, or modified) with individual per-file status reporting.
 - `remove_from_knowledge(path)` — delete from rag_api, clears index.
 - `get_index_status()` — returns counts of total, indexed, pending, failed, and modified-after-indexing documents, plus rag_api health.
+
+#### How automatic project search works (`scope="auto"`)
+
+1. LibreChat sends the conversation ID in the `X-Conversation-Id` request header (see `requestHeaders` above).
+2. The server looks up that conversation in LibreChat's MongoDB (read-only, filtered by the authenticated user) and reads its `chatProjectId`.
+3. The search is restricted to the indexed documents that belong to that project. Only their `file_id`s are sent to `rag_api`, so documents from other projects never reach the model.
+4. If the conversation is confirmed to have **no** project, `auto` searches all of the user's indexed documents.
+5. If the project **cannot be determined** (database unreachable, conversation not yet saved, missing or invalid header), the tool returns `project_resolution_failed` and does not query `rag_api`. It never widens the search silently.
+
+A document belongs to a project when its catalog entry has that `project_id`, or, if it has none, when it is catalogued in `projects/<project_id>/`. The same rule is used by `list_projects`, `get_project_context` and `list_documentation`.
+
+Example result in a project conversation:
+
+```json
+{"query": "deployment checklist", "scope": "project", "project_id": "<project_id>", "count": 3, "results": ["..."]}
+```
+
+Explicit scopes do not need project resolution: `scope="project"` with `project_id`, `scope="personal"` (documents with no project) and `scope="all"`.
 
 ### Publishing
 
