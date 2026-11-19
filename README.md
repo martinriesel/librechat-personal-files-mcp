@@ -245,12 +245,12 @@ Documentation files and catalogs follow a structured hierarchy:
 - Direct LLM writes/edits/deletions of any `memory-index.json` are rejected (`protected_file`).
 
 Tools:
-- `save_documentation(filename, content, title?, description?, tags?, topics?, project_id?, project_name?)` — auto-routes to `projects/<project_id>/` for project chats, or `docs/` for chats proven without a project. Fails closed (`project_resolution_failed`) if resolver errors.
+- `save_documentation(filename, content, title?, description?, tags?, topics?, project_id?, project_name?)` — auto-routes to `projects/<project_id>/` for project chats, or `docs/` for chats proven without a project. Fails closed (`project_resolution_failed`) if resolver errors. `filename` is a file name only: documents are stored flat, and a subfolder (e.g. `folder/note.md`) is rejected with `subfolder_not_supported` instead of being dropped. Use `write_file` for arbitrary folders.
 - `update_documentation(filename, content, title?, description?, tags?, topics?, project_id?, project_name?)` — updates existing doc across catalogs, preserving existing project association.
 - `get_document_metadata(filename)` — looks up document across catalogs by `doc_id`, relative path, or filename. Returns metadata including `modified_since_indexing`.
 - `list_documentation(project_id?, tag?, unassigned_only=false)` — lists registered documentation across scopes or filtered by project/unassigned, reporting `doc_id` and indexing status.
 - `register_documentation(path, title?, description?, tags?, topics?, project_id?, project_name?)` — registers an existing `.md`/`.txt` file on disk into the catalog without rewriting its contents.
-- `transfer_documentation(identifier, target_project_id?, target_filename?, dry_run=false)` — transfers a document between general and project scopes or between projects, preserving `doc_id`, metadata, RAG status, and public link URLs. Supports collision detection and dry-run preview.
+- `transfer_documentation(identifier, target_project_id?, target_filename?, dry_run=false)` — transfers a document between general and project scopes or between projects, preserving `doc_id`, metadata, RAG status, and public link URLs. Sets the destination `project_name` from LibreChat (cleared when moving to `docs/`). Supports collision detection and dry-run preview.
 - `reconcile_documentation(project_id?, repair=false)` — scans for unregistered files on disk, orphaned catalog entries, and modified files after indexing. Repairs discrepancies only when `repair=true`.
 
 ### RAG & Batch Indexing

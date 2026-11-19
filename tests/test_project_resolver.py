@@ -194,3 +194,40 @@ async def test_resolve_context_invalid_placeholder(settings):
     )
 
     assert res.status == "context_invalid"
+
+
+async def test_get_project_name_filters_by_user_and_handles_bad_ids():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from personal_files_mcp.config import AppSettings
+    from personal_files_mcp.project_resolver import ProjectResolver
+
+    coll = MagicMock()
+    coll.find_one = AsyncMock(return_value={"name": "Project Alpha"})
+    db = MagicMock()
+    db.chatprojects = coll
+    client = MagicMock()
+    client.__getitem__.return_value = db
+    resolver = ProjectResolver(client)
+    s = AppSettings()
+
+    pid = "aaaaaaaaaaaaaaaaaaaaaa01"
+    assert await resolver.get_project_name(s, "user-1", pid) == "Project Alpha"
+    query = coll.find_one.await_args.args[0]
+    assert str(query["_id"]) == pid and query["user"] == "user-1"
+
+    # Non-ObjectId (legacy folder name): no DB call, no guess
+    coll.find_one.reset_mock()
+    assert await resolver.get_project_name(s, "user-1", "Legacy_Folder") is None
+    coll.find_one.assert_not_called()
+
+    # Not owned / missing
+    coll.find_one = AsyncMock(return_value=None)
+    assert await resolver.get_project_name(s, "user-1", pid) is None
+
+    # DB error
+    coll.find_one = AsyncMock(side_effect=RuntimeError("down"))
+    assert await resolver.get_project_name(s, "user-1", pid) is None
+
+    # No client configured
+    assert await ProjectResolver(None).get_project_name(s, "user-1", pid) is None

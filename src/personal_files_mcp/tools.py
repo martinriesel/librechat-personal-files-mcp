@@ -500,13 +500,32 @@ def read_binary_file(
 # ---------------------------------------------------------------------------
 
 
-def _sanitize_doc_filename(filename: str) -> str:
+class SubfolderNotSupported(storage.StorageError):
+    """Documentation filenames must not contain subfolders."""
+
+
+def _sanitize_doc_filename(filename: str, target_dir: str | None = None) -> str:
+    """Return the bare documentation filename, never silently dropping folders.
+
+    Documentation lives flat in ``docs/`` or ``projects/<id>/``. A prefix that
+    merely repeats the destination (``docs/x.md`` when saving to ``docs/``) is
+    accepted and stripped; any other folder raises ``SubfolderNotSupported``
+    instead of being discarded.
+    """
     if not isinstance(filename, str) or not filename:
         raise storage.StorageError("filename is required")
     cleaned = filename.replace("\\", "/")
     if cleaned.startswith("/") or any(part == ".." for part in cleaned.split("/")):
         raise storage.StorageError("invalid documentation filename")
-    base = cleaned.split("/")[-1]
+    if target_dir and cleaned.startswith(f"{target_dir}/"):
+        cleaned = cleaned[len(target_dir) + 1 :]
+    if "/" in cleaned:
+        raise SubfolderNotSupported(
+            f"subfolders are not supported in documentation filenames: {filename!r}. "
+            f"Documents are stored directly in '{target_dir or 'docs'}/'; pass only the "
+            "file name (e.g. 'notes.md'), or use write_file for arbitrary folders."
+        )
+    base = cleaned
     if not base or base in (".", ".."):
         raise storage.StorageError("invalid documentation filename")
     if base.startswith("."):
@@ -541,11 +560,6 @@ def save_documentation(
             f"Project resolution status '{resolver_status}': destination scope cannot be determined safely.",
             resolver_status=resolver_status,
         )
-    try:
-        safe = _sanitize_doc_filename(filename)
-    except storage.StorageError as exc:
-        return _err("invalid_filename", str(exc))
-
     req_ctx = project_context.get_request_context()
     resolved_proj_id = project_id or (req_ctx.project_id if req_ctx else None)
     resolved_proj_name = project_name or (req_ctx.project_name if req_ctx else None)
@@ -557,6 +571,13 @@ def save_documentation(
     else:
         target_dir = DOCUMENTATION_SUBDIR
         cat = docindex.get_general_catalog(cfg, user_id)
+
+    try:
+        safe = _sanitize_doc_filename(filename, target_dir)
+    except SubfolderNotSupported as exc:
+        return _err("subfolder_not_supported", str(exc))
+    except storage.StorageError as exc:
+        return _err("invalid_filename", str(exc))
 
     rel = f"{target_dir}/{safe}"
     try:
@@ -805,22 +826,21 @@ def transfer_documentation(
     target_project_id: str | None = None,
     target_filename: str | None = None,
     dry_run: bool = False,
+    target_project_name: str | None = None,
 ) -> str:
     """Transfer documentation file and index record between scopes.
 
     Preserves metadata, public links, and RAG status. Detects collisions and
     supports dry_run verification.
+
+    ``target_project_name`` is the destination project's display name, looked
+    up by the MCP layer in LibreChat's ``chatprojects``. When it is not given,
+    the name is taken from another entry already linked to that project, or
+    kept if the document stays in the same project.
     """
     entry, src_cat = docindex.find_document_across_catalogs(cfg, user_id, identifier)
     if entry is None or src_cat is None:
         return _err("not_found", f"document '{identifier}' not found in any catalog")
-
-    src_path = entry.file
-    base_fn = target_filename or src_path.rsplit("/", 1)[-1]
-    try:
-        safe_fn = _sanitize_doc_filename(base_fn)
-    except storage.StorageError as exc:
-        return _err("invalid_filename", str(exc))
 
     if target_project_id:
         dst_dir = f"projects/{target_project_id}"
@@ -828,6 +848,21 @@ def transfer_documentation(
     else:
         dst_dir = DOCUMENTATION_SUBDIR
         dst_cat = docindex.get_general_catalog(cfg, user_id)
+
+    src_path = entry.file
+    base_fn = target_filename or src_path.rsplit("/", 1)[-1]
+    try:
+        safe_fn = _sanitize_doc_filename(base_fn, dst_dir)
+    except SubfolderNotSupported as exc:
+        return _err("subfolder_not_supported", str(exc))
+    except storage.StorageError as exc:
+        return _err("invalid_filename", str(exc))
+
+    dst_project_name = (
+        _known_project_name(cfg, user_id, entry, target_project_id, target_project_name)
+        if target_project_id
+        else None
+    )
 
     dst_path = f"{dst_dir}/{safe_fn}"
 
@@ -869,6 +904,7 @@ def transfer_documentation(
                 "target_file": dst_path,
                 "source_project_id": entry.project_id,
                 "target_project_id": target_project_id,
+                "target_project_name": dst_project_name,
                 "can_transfer": True,
                 "public_link": has_link,
                 "rag_indexed": entry.rag_indexed,
@@ -896,7 +932,7 @@ def transfer_documentation(
         entry,
         file=dst_path,
         project_id=target_project_id,
-        project_name=None,
+        project_name=dst_project_name,
         updated_at=docindex._utc_now_iso(),
     )
     dst_cat.upsert(updated_entry)
@@ -909,10 +945,34 @@ def transfer_documentation(
             "target_file": dst_path,
             "source_project_id": entry.project_id,
             "target_project_id": target_project_id,
+            "target_project_name": dst_project_name,
             "public_link_preserved": link_moved,
             "rag_preserved": updated_entry.rag_indexed,
         }
     )
+
+
+def _known_project_name(
+    cfg: storage.StorageConfig,
+    user_id: str,
+    entry: docindex.DocumentEntry,
+    project_id: str,
+    looked_up: str | None,
+) -> str | None:
+    """Best available display name for ``project_id`` without guessing.
+
+    Order: name looked up in LibreChat, the document's own name if it already
+    belongs to that project, then the name stored on another catalog entry of
+    the same project. ``None`` if none is known.
+    """
+    if looked_up:
+        return looked_up
+    if entry.project_id == project_id and entry.project_name:
+        return entry.project_name
+    for d in docindex.list_all_documents(cfg, user_id, project_id=project_id):
+        if d.project_name:
+            return d.project_name
+    return None
 
 
 def reconcile_documentation(

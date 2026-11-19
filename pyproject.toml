@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "librechat-personal-files-mcp"
-version = "1.5.0"
+version = "1.5.1"
 description = "MCP server providing per-user personal file storage, documentation, RAG and public publishing for LibreChat agents."
 readme = "README.md"
 requires-python = ">=3.12"

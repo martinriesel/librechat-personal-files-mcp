@@ -14,12 +14,14 @@ during FastAPI lifespan and exposed to tools via ``app.state``.
 """
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import secrets
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
+from anyio import to_thread
 from fastapi import FastAPI, File, Form, UploadFile
 from fastmcp import Context, FastMCP
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -538,6 +540,11 @@ def register_mcp_tools(mcp: FastMCP) -> None:
 
         Automatically routes to projects/<project_id>/ if within a project conversation,
         or docs/ if proven without a project. Fails closed if project resolution errors.
+
+        Args:
+            filename: file name only (e.g. 'notes.md'). Subfolders are NOT supported and
+                are rejected with 'subfolder_not_supported'; documents are stored flat in
+                docs/ or projects/<project_id>/. Use write_file for arbitrary folders.
         """
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
@@ -686,7 +693,7 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         )
 
     @mcp.tool()
-    def transfer_documentation(
+    async def transfer_documentation(
         ctx: Context,
         identifier: str,
         target_project_id: str | None = None,
@@ -702,18 +709,30 @@ def register_mcp_tools(mcp: FastMCP) -> None:
         Args:
             identifier: file path or doc_id of the document to transfer.
             target_project_id: destination project ID (omit or None for general docs/ scope).
-            target_filename: optional new filename in destination (defaults to current filename).
+            target_filename: optional new filename in destination (defaults to current
+                filename). File name only: subfolders are rejected.
             dry_run: if True, validates transfer and returns preview without moving.
         """
         app_ctx = _get_app_ctx(ctx)
         uid = _get_user_id(ctx)
-        return tools.transfer_documentation(
-            app_ctx.storage_cfg,
-            uid,
-            identifier,
-            target_project_id=target_project_id,
-            target_filename=target_filename,
-            dry_run=dry_run,
+        target_project_name: str | None = None
+        resolver = getattr(app_ctx, "project_resolver", None)
+        if target_project_id and resolver is not None:
+            target_project_name = await resolver.get_project_name(
+                app_ctx.settings, uid, target_project_id
+            )
+        # Catalog and file I/O is blocking: keep it off the event loop.
+        return await to_thread.run_sync(
+            functools.partial(
+                tools.transfer_documentation,
+                app_ctx.storage_cfg,
+                uid,
+                identifier,
+                target_project_id=target_project_id,
+                target_filename=target_filename,
+                dry_run=dry_run,
+                target_project_name=target_project_name,
+            )
         )
 
     @mcp.tool()

@@ -460,3 +460,118 @@ def test_unpublish_other_users_token_is_rejected(settings):
     token = _ok(tools.publish_file(cfg, USER, "docs/mine.md"))["token"]
     assert _err(tools.unpublish_file(cfg, OTHER_USER, token))["error"] == "not_found"
     assert docindex.get_general_catalog(cfg, USER).get("docs/mine.md").public is True
+
+
+# ---------------------------------------------------------------------------
+# 1.5.1: subfolders in save_documentation, project_name after transfer
+# ---------------------------------------------------------------------------
+
+
+def test_save_documentation_rejects_subfolder(settings):
+    ctx = _make_ctx(settings)
+    cfg = ctx.storage_cfg
+    err = _err(tools.save_documentation(cfg, USER, "notes-folder/sub.md", "# S"))
+    assert err["error"] == "subfolder_not_supported"
+    # Nothing was written under docs/ with the folder silently dropped
+    assert not (Path(settings.storage_root) / USER / "docs" / "sub.md").exists()
+    assert docindex.get_general_catalog(cfg, USER).get("sub.md") is None
+
+    err = _err(tools.save_documentation(cfg, USER, "a/b.md", "# B", project_id=PROJ_A))
+    assert err["error"] == "subfolder_not_supported"
+    assert not (Path(settings.storage_root) / USER / "projects" / PROJ_A / "b.md").exists()
+
+
+def test_save_documentation_accepts_destination_prefix(settings):
+    ctx = _make_ctx(settings)
+    cfg = ctx.storage_cfg
+    assert _ok(tools.save_documentation(cfg, USER, "docs/plain.md", "# P"))["file"] == "docs/plain.md"
+    res = _ok(
+        tools.save_documentation(cfg, USER, f"projects/{PROJ_A}/p.md", "# P", project_id=PROJ_A)
+    )
+    assert res["file"] == f"projects/{PROJ_A}/p.md"
+    # A different project's prefix is a subfolder, not a re-route
+    err = _err(
+        tools.save_documentation(cfg, USER, f"projects/{PROJ_B}/x.md", "# X", project_id=PROJ_A)
+    )
+    assert err["error"] == "subfolder_not_supported"
+
+
+def test_transfer_rejects_subfolder_target_filename(settings):
+    ctx = _bound_ctx(settings)
+    cfg = ctx.storage_cfg
+    tools.save_documentation(cfg, USER, "t.md", "# T")
+    err = _err(tools.transfer_documentation(cfg, USER, "docs/t.md", PROJ_A, target_filename="sub/t.md"))
+    assert err["error"] == "subfolder_not_supported"
+    assert (Path(settings.storage_root) / USER / "docs" / "t.md").exists()
+
+
+def test_transfer_sets_project_name_from_lookup(settings):
+    ctx = _bound_ctx(settings)
+    cfg = ctx.storage_cfg
+    tools.save_documentation(cfg, USER, "n.md", "# N")
+    dry = _ok(
+        tools.transfer_documentation(
+            cfg, USER, "docs/n.md", PROJ_A, dry_run=True, target_project_name="Project Alpha"
+        )
+    )
+    assert dry["target_project_name"] == "Project Alpha"
+    res = _ok(
+        tools.transfer_documentation(cfg, USER, "docs/n.md", PROJ_A, target_project_name="Project Alpha")
+    )
+    assert res["target_project_name"] == "Project Alpha"
+    entry = docindex.get_project_catalog(cfg, USER, PROJ_A).get(f"projects/{PROJ_A}/n.md")
+    assert entry.project_id == PROJ_A and entry.project_name == "Project Alpha"
+
+
+def test_transfer_project_name_falls_back_to_catalog(settings):
+    ctx = _bound_ctx(settings)
+    cfg = ctx.storage_cfg
+    tools.save_documentation(cfg, USER, "known.md", "# K", project_id=PROJ_B, project_name="Project Beta")
+    tools.save_documentation(cfg, USER, "m.md", "# M")
+    res = _ok(tools.transfer_documentation(cfg, USER, "docs/m.md", PROJ_B))
+    assert res["target_project_name"] == "Project Beta"
+
+
+def test_transfer_to_general_clears_project(settings):
+    ctx = _bound_ctx(settings)
+    cfg = ctx.storage_cfg
+    tools.save_documentation(cfg, USER, "back.md", "# B", project_id=PROJ_A, project_name="Project Alpha")
+    res = _ok(tools.transfer_documentation(cfg, USER, f"projects/{PROJ_A}/back.md"))
+    assert res["target_project_name"] is None
+    entry = docindex.get_general_catalog(cfg, USER).get("docs/back.md")
+    assert entry.project_id is None and entry.project_name is None
+
+
+def test_transfer_via_transport_looks_up_project_name(settings):
+    resolver = _resolver("project", PROJ_A)
+    resolver.get_project_name = AsyncMock(return_value="Project Alpha")
+    ctx = _make_ctx(settings, resolver)
+    cfg = ctx.storage_cfg
+    storage.write(cfg, USER, "docs/via.md", b"# Via")
+    docindex.get_general_catalog(cfg, USER).upsert(docindex.DocumentEntry(file="docs/via.md"))
+    with TestClient(create_app(ctx)) as client:
+        result = _mcp_call(
+            client,
+            "transfer_documentation",
+            {"identifier": "docs/via.md", "target_project_id": PROJ_A},
+            _headers(),
+        )
+    payload = _ok(_text(result))
+    assert payload["transferred"] is True
+    assert payload["target_project_name"] == "Project Alpha"
+    resolver.get_project_name.assert_awaited_once()
+    assert resolver.get_project_name.await_args.args[1:] == (USER, PROJ_A)
+    entry = docindex.get_project_catalog(cfg, USER, PROJ_A).get(f"projects/{PROJ_A}/via.md")
+    assert entry.project_name == "Project Alpha"
+
+
+def test_save_documentation_subfolder_via_transport(settings):
+    ctx = _make_ctx(settings, _resolver("no_project"))
+    with TestClient(create_app(ctx)) as client:
+        result = _mcp_call(
+            client,
+            "save_documentation",
+            {"filename": "skill-test/sub.md", "content": "# S"},
+            _headers(),
+        )
+    assert _err(_text(result))["error"] == "subfolder_not_supported"

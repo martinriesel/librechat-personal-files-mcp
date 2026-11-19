@@ -293,6 +293,40 @@ class ProjectResolver:
             project_description=proj.get("description", ""),
         )
 
+    async def get_project_name(
+        self,
+        settings: AppSettings,
+        user_id: str,
+        project_id: str,
+    ) -> str | None:
+        """Return the name of a project owned by ``user_id``, or ``None``.
+
+        Read-only lookup in ``chatprojects`` filtered by ``_id`` AND ``user``.
+        Returns ``None`` when the client is not configured, the ID is not an
+        ObjectId (e.g. a legacy on-disk folder), the project does not belong to
+        the user, or the database fails.
+        """
+        if not self._client or not project_id:
+            return None
+        try:
+            proj_obj_id = ObjectId(str(project_id)) if ObjectId is not None else project_id
+        except Exception:
+            return None
+        try:
+            proj = await asyncio.wait_for(
+                self._client[self._db_name].chatprojects.find_one(
+                    {"_id": proj_obj_id, "user": user_id},
+                    projection={"_id": 0, "name": 1},
+                ),
+                timeout=self._timeout_sec,
+            )
+        except Exception as exc:
+            logger.warning("failed to look up project name: %s", exc)
+            return None
+        if not proj:
+            return None
+        return proj.get("name") or None
+
     async def list_user_projects(
         self,
         settings: AppSettings,

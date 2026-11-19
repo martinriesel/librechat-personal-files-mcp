@@ -11,6 +11,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.1] — 2026-11-19
+
+### Fixed
+- **`save_documentation` silently dropped subfolders.** `folder/note.md` was saved as
+  `docs/note.md` without any warning. Documentation is stored flat in `docs/` or
+  `projects/<project_id>/`, so a filename with a subfolder now returns
+  `subfolder_not_supported` and nothing is written. A prefix that only repeats the destination
+  (`docs/note.md` when saving to `docs/`) is still accepted. `transfer_documentation(target_filename=…)`
+  follows the same rule. Use `write_file` for arbitrary folders.
+- **`transfer_documentation` left `project_name` empty** in the destination entry (it was always set to
+  `null`). The MCP tool now looks up the destination project's name in LibreChat (`chatprojects`, filtered
+  by the authenticated user); if that is unavailable it reuses the name stored on another entry of the same
+  project. Transfers to `docs/` clear both `project_id` and `project_name`. The response and the dry run
+  include `target_project_name`.
+
+### Changed
+- `transfer_documentation` runs its file and catalog work in a worker thread (the tool is now async to do
+  the read-only project-name lookup).
+- Version 1.5.1.
+
+---
+
 ## [1.5.0-test] — 2026-11-18
 
 Fixes found while validating 1.4.0-test from LibreChat.
